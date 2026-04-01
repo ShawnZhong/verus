@@ -559,3 +559,28 @@ test_verify_one_file! {
         }
     } => Ok(())
 }
+
+test_verify_one_file! {
+    #[test] #[ignore = "testing"] unsound
+    TOKEN_LIB.to_owned() + verus_code_str! {
+        pub exec fn atomic_function()
+            atomically (au) {
+                type FunctionPred,
+                (x: Token) -> (y: I<Token>),
+            },
+            requires au.resolves(), // !!!
+        {}
+
+        #[verifier::loop_isolation(false)]
+        pub exec fn client() {
+            let tracked mut token = Token::new();
+            atomic_function() atomically |update| -> (au) {
+                assert(au.req(token));
+                let tracked I(new_token) = update(token);
+                assert(au.ens(token, I(new_token)));
+                assert(au.resolves());
+                break
+            };
+        }
+    } => Ok(())
+}

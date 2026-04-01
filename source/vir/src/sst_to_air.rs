@@ -1944,7 +1944,7 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
             // We don't want to do this all the time though --- only when the generic
             // FnDef types exist post-pruning.
             let emit_generic_conditions = ctx.fndef_types.contains(fun);
-            let resolved_fun = resolved_method.clone().map(|r| r.0);
+            let resolved_fun = resolved_method.as_ref().map(|(f, _)| f).cloned();
 
             assert!(split.is_none());
             let mut stmts: Vec<Stmt> = Vec::new();
