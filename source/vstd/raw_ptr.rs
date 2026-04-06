@@ -1914,19 +1914,22 @@ pub broadcast axiom fn axiom_shared_ref_value_view<'a, T>(shared_ref: SharedRefe
         shared_ref.value()@ == #[trigger] shared_ref@,
 ;
 
+/// Returns the underlying pointer of a mutable reference.
 pub uninterp spec fn mut_ref_ptr<T>(mut_ref: &mut T) -> *mut T;
 
 /// Cast a mutable reference to a pointer.
-/// Temporary until we get as casting support.
+/// Temporary until we get as-casting support.
 #[verifier::external_body]
 #[verifier::deprecated_postcondition_mut_ref_style(false)]
 pub fn cast_mut_ref_to_ptr<T>(mut_ref: &mut T) -> (ptr: *mut T)
     ensures
         ptr == mut_ref_ptr(old(mut_ref)),
+        *old(mut_ref) == *final(mut_ref),
 {
     mut_ref as *mut T
 }
 
+/// We can always get an `&mut` to the `PointsTo` which corresponds to a mutable reference.
 #[verifier::deprecated_postcondition_mut_ref_style(false)]
 pub axiom fn mut_ref_points_to<T>(tracked mut_ref: &mut T) -> (tracked pt: &mut PointsTo<T>)
     ensures
