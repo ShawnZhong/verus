@@ -1331,7 +1331,6 @@ pub fn ptr_ref<T>(ptr: *const T, Tracked(perm): Tracked<&PointsTo<T>>) -> (v: &T
     unsafe { &*ptr }
 }
 
-
 /// Equivalent to &mut *X, passing in a permission `perm` to ensure safety.
 /// The memory pointed to by `ptr` must be initialized.
 #[inline(always)]
@@ -1341,18 +1340,15 @@ pub fn ptr_ref<T>(ptr: *const T, Tracked(perm): Tracked<&PointsTo<T>>) -> (v: &T
 pub fn ptr_mut_ref<T>(ptr: *mut T, Tracked(perm): Tracked<&mut PointsTo<T>>) -> (v: &mut T)
     requires
         old(perm).ptr() == ptr,
-        old(perm).is_init()
+        old(perm).is_init(),
     ensures
         final(perm).ptr() == ptr,
         final(perm).is_init(),
-
-        final(perm).value() == *v,
-        // final(perm).value() == *final(v),
-        // v to always be the same as perm.value()
+        *v == old(perm).value(),
+        final(perm).value() == *final(v),
 {
     unsafe { &mut *ptr }
 }
-
 
 macro_rules! pointer_specs {
     ($mod_ident:ident, $ptr_from_data:ident, $mu:tt) => {
@@ -1918,65 +1914,28 @@ pub broadcast axiom fn axiom_shared_ref_value_view<'a, T>(shared_ref: SharedRefe
         shared_ref.value()@ == #[trigger] shared_ref@,
 ;
 
+pub uninterp spec fn mut_ref_ptr<T>(mut_ref: &mut T) -> *mut T;
+
+/// Cast a mutable reference to a pointer.
+/// Temporary until we get as casting support.
 #[verifier::external_body]
-#[verifier::accept_recursive_types(T)]
-// #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::raw_ptr::MutableReference")]
-pub struct MutableReference<'a, T: ?Sized>(&'a mut T);
-
-impl<'a, T> MutableReference<'a, T> {
-    pub uninterp spec fn value(self) -> &'a mut T;
-
-    pub uninterp spec fn ptr(self) -> *mut T;
-
-    #[verifier::external_body]
-    pub const fn new(t: &'a mut T) -> (s: Self)
-        ensures
-            s.value() == old(t),
-            // final(s).value() == final(t),
-    {
-        MutableReference(t)
-    }
-
-    #[verifier::external_body]
-    pub const fn as_mut_ref(&'a mut self) -> (t: &'a mut T)
-        ensures
-            t == self.value(),
-
-    {
-        self.0
-    }
-
-    #[verifier::external_body]
-    pub const fn as_ref(&'a self) -> (t: &'a T)
-        ensures
-            t == *self.value(),
-
-    {
-        &*self.0
-    }
-
-    #[verifier::external_body]
-    pub const fn as_ptr(&mut self) -> (ptr: *mut T)
-        ensures
-            ptr == self.ptr(),
-    {
-        &mut *self.0
-    }
-    
-    #[verifier::deprecated_postcondition_mut_ref_style(false)]
-    pub axiom fn points_to(tracked &mut self) -> (tracked pt: &'a mut PointsTo<T>)
-        ensures
-            pt.ptr() == old(self).ptr(),
-            pt.is_init(),
-            pt.value() == *old(self).value(),
-            pt.ptr() == final(self).ptr(),
-            final(pt).ptr() == final(self).ptr(),
-            final(pt).is_init(),
-            // final(pt).value() == final(self).value(),
-            // pt.value() always tracks self.value()
-            // when mut ref to pt is returned, values match
-    ;
+#[verifier::deprecated_postcondition_mut_ref_style(false)]
+pub fn cast_mut_ref_to_ptr<T>(mut_ref: &mut T) -> (ptr: *mut T)
+    ensures
+        ptr == mut_ref_ptr(old(mut_ref)),
+{
+    mut_ref as *mut T
 }
+
+#[verifier::deprecated_postcondition_mut_ref_style(false)]
+pub axiom fn mut_ref_points_to<T>(tracked mut_ref: &mut T) -> (tracked pt: &mut PointsTo<T>)
+    ensures
+        pt.ptr() == mut_ref_ptr(old(mut_ref)),
+        pt.is_init(),
+        pt.value() == *old(mut_ref),
+        mut_ref_ptr(final(mut_ref)) == final(pt).ptr(),
+        *final(mut_ref) == final(pt).value(),
+;
 
 // impl<'a, T> Index<usize> for SharedReference<'a, [T]>
 // where
