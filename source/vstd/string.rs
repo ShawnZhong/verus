@@ -6,12 +6,12 @@ use alloc::str::Chars;
 #[cfg(all(feature = "alloc", not(verus_verify_core)))]
 use alloc::string::{self, String, ToString};
 
-#[cfg(verus_keep_ghost)]
-#[cfg(all(feature = "alloc", not(verus_verify_core)))]
-use super::std_specs::iter::IteratorSpec;
 use super::prelude::*;
 use super::seq::Seq;
 use super::slice::*;
+#[cfg(verus_keep_ghost)]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
+use super::std_specs::iter::IteratorSpec;
 use super::utf8::*;
 use super::view::*;
 
@@ -509,6 +509,7 @@ pub broadcast axiom fn next_postcondition<'a>(
         ),
 // TODO: These are copied from the Iterator::next function.  Eventually, we should
 //       relax Verus's retrictions and allow this function to inherit those specs.
+
     ensures
 // The iterator consistently obeys, completes, and decreases throughout its lifetime
 

@@ -850,10 +850,13 @@ pub assume_specification<Key, Value, S, A: Allocator>[ HashMap::<Key, Value, S, 
 // the iterator in spec mode. To do that, we add
 // `#[verifier::when_used_as_spec(spec_iter)` to the specification for
 // the executable `iter` method and define that spec function here.
-pub uninterp spec fn spec_keys_iter<'a, Key, Value, S, A: Allocator>(m: &'a HashMap<Key, Value, S, A>) -> (keys:
-    Keys<'a, Key, Value>);
+pub uninterp spec fn spec_keys_iter<'a, Key, Value, S, A: Allocator>(
+    m: &'a HashMap<Key, Value, S, A>,
+) -> (keys: Keys<'a, Key, Value>);
 
-pub broadcast proof fn axiom_spec_keys_iter<'a, Key, Value, S, A: Allocator>(m: &'a HashMap<Key, Value, S, A>)
+pub broadcast proof fn axiom_spec_keys_iter<'a, Key, Value, S, A: Allocator>(
+    m: &'a HashMap<Key, Value, S, A>,
+)
     ensures
         (#[trigger] spec_keys_iter(m).remaining()).unref().to_set() == m@.dom(),
         spec_keys_iter(m).remaining().no_duplicates(),
@@ -880,13 +883,15 @@ pub assume_specification<'a, Key, Value, S, A: Allocator>[ HashMap::<Key, Value,
 // the iterator in spec mode. To do that, we add
 // `#[verifier::when_used_as_spec(spec_iter)` to the specification for
 // the executable `iter` method and define that spec function here.
-pub uninterp spec fn spec_values_iter<'a, Key, Value, S, A: Allocator>(m: &'a HashMap<Key, Value, S, A>) -> (values:
-    Values<'a, Key, Value>);
+pub uninterp spec fn spec_values_iter<'a, Key, Value, S, A: Allocator>(
+    m: &'a HashMap<Key, Value, S, A>,
+) -> (values: Values<'a, Key, Value>);
 
-pub broadcast proof fn axiom_spec_values_iter<'a, Key, Value, S, A: Allocator>(m: &'a HashMap<Key, Value, S, A>)
+pub broadcast proof fn axiom_spec_values_iter<'a, Key, Value, S, A: Allocator>(
+    m: &'a HashMap<Key, Value, S, A>,
+)
     ensures
-        (#[trigger] spec_values_iter(m).remaining()).unref().to_set()
-            == m@.values(),
+        (#[trigger] spec_values_iter(m).remaining()).unref().to_set() == m@.values(),
         spec_values_iter(m).remaining().len() == m@.dom().len(),
 {
     admit();
@@ -1185,12 +1190,12 @@ pub assume_specification<Key, S, A: Allocator>[ HashSet::<Key, S, A>::clear ](
 // the iterator in spec mode. To do that, we add
 // `#[verifier::when_used_as_spec(spec_iter)` to the specification for
 // the executable `iter` method and define that spec function here.
-pub uninterp spec fn spec_hash_keys_iter<'a, Key, S, A: Allocator>(m: &'a HashSet<Key, S, A>) -> (r: hash_set::Iter<
-    'a,
-    Key,
->);
+pub uninterp spec fn spec_hash_keys_iter<'a, Key, S, A: Allocator>(m: &'a HashSet<Key, S, A>) -> (r:
+    hash_set::Iter<'a, Key>);
 
-pub broadcast proof fn axiom_spec_hash_keys_iter<'a, Key, S, A: Allocator>(m: &'a HashSet<Key, S, A>)
+pub broadcast proof fn axiom_spec_hash_keys_iter<'a, Key, S, A: Allocator>(
+    m: &'a HashSet<Key, S, A>,
+)
     ensures
         (#[trigger] spec_hash_keys_iter(m).remaining()).unref().to_set() == m@,
         spec_hash_keys_iter(m).remaining().no_duplicates(),

@@ -637,8 +637,7 @@ pub broadcast proof fn axiom_spec_values_iter<'a, Key, Value, A: Allocator + Clo
     m: &'a BTreeMap<Key, Value, A>,
 )
     ensures
-        (#[trigger] spec_values_iter(m).remaining()).unref().to_set()
-            == m@.values(),
+        (#[trigger] spec_values_iter(m).remaining()).unref().to_set() == m@.values(),
         spec_values_iter(m).remaining().len() == m@.dom().len(),
 {
     admit();
