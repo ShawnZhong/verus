@@ -847,6 +847,64 @@ impl PWeakAtomicU8 {
     {
         Ghost(unreached())
     }
+
+    // AT-CAS-SN-GEN -- of = relaxed, or = acquire, ow = relaxed
+    #[inline(always)]
+    #[verifier::external_body]
+    #[verifier::atomic]
+    pub fn cas_rlx_acq_rlx(
+        &self,
+        Tracked(v_sn): Tracked<&mut ViewSeen>,
+        Tracked(rel_v_sn): Tracked<ReleaseViewSeen>,
+        Tracked(pt): Tracked<&mut AtomicPointsTo<u8>>,
+        vr : u8,
+        vw : u8,
+    ) -> (out: (Result<u8, u8>, Ghost<View>, Ghost<View>, Ghost<nat>, Tracked<Option<AcquireViewSeen>>))
+        requires
+            self.loc() == old(pt).loc(),
+        ensures
+            ({
+                let res = out.0; // whether the CAS succeeded
+                let read_view = out.1@; // view for the read message
+                let write_view = out.2@; // view for the write message (if the CAS succeeded)
+                let timestamp = out.3@;  // timestamp of the write that was read
+                let vs_vr_opt = out.4@; // new ViewSeen under the acquire modality, if the CAS failed because of = rlx
+                let v = match res { Ok(v) => v, Err(v) => v, };
+                // the write that was read is no earlier than the last write that this thread has seen
+                &&& old(v_sn).view().get_timestamp(self.loc()) <= timestamp
+                // latest thread view is greater than (or potentially equal to if CAS fails) the old one,
+                &&& v_sn.view().contains(old(v_sn).view())
+                // the latest thread view has seen the timestamp of the write that was read
+                &&& timestamp <= v_sn.view().get_timestamp(self.loc())
+                &&& #[trigger] pt.hist().get(timestamp) == Some((v, Some(read_view)))
+                &&& pt.loc() == old(pt).loc()
+                &&& ({
+                    &&& res matches Ok(_)
+                    &&& vr == v
+                    &&& v_sn.view().contains_strict(old(v_sn).view())
+                    &&& write_view.contains_strict(read_view)
+                    &&& !read_view.contains(v_sn.view())
+                    // the new write will be placed in the history next to the write that was read, the history should have this timestamp available
+                    &&& !old(pt).hist().contains_timestamp(timestamp+1)
+                    // because this is a relaxed write (ow = rlx), the write view contains the release view
+                    &&& write_view.contains(rel_v_sn.view())
+                    // because the successful read is an acquire read (or = acq), the read and write views are both joined to the thread's current view
+                    &&& v_sn.view().contains(write_view)
+                    // the points-to's history is updated to contain the new write,
+                    &&& pt.hist() == old(pt).hist().insert(timestamp+1, v, Some(write_view)) }) ||
+                ({
+                    &&& res matches Err(_)
+                    &&& vr != v
+                    &&& pt.hist() == old(pt).hist()
+                    &&& vs_vr_opt.is_some()
+                    &&& vs_vr_opt.unwrap().view() == read_view
+                })
+            }),
+        opens_invariants none
+        no_unwind
+    {
+        return (self.ato.compare_exchange(vr, vw, Ordering::Acquire, Ordering::Relaxed), Ghost::new(unreached()), Ghost::new(unreached()), Ghost::new(unreached()), Tracked::assume_new());
+    }
 }
 
 // version of atomic_ghost types for weak memory
