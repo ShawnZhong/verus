@@ -291,10 +291,15 @@ impl<V> PointsTo<V> {
         self.points_to.leak_contents();
     }
 
-    /// Guarantees that the memory ranges associated with two permissions will not overlap,
-    /// provided that both `S` and `V` are non-zero-sized.
-    /// This is true because you cannot have two permissions to the same memory,
-    /// and it implies the pointers have distinct addresses.
+    /// Guarantees that two distinct, non-ZST `PointsTo<V>` objects point to disjoint ranges of memory.
+    /// Since both S and V are non-zero-sized, this also implies the pointers
+    /// have distinct addresses.
+    ///
+    /// Note: If either S or T is zero-sized, we get disjointness "for free" without having to call this proof,
+    /// since the empty memory range corresponding to a ZST cannot possibly intersect with any other memory.
+    /// However, note that if one type is a ZST and the other is a non-ZST,
+    /// the disjointness definition as stated here here does not hold,
+    /// since the ZST pointer could be in the middle of the non-ZST's range.
     pub proof fn is_disjoint<S>(tracked &mut self, tracked other: &PointsTo<S>)
         requires
             size_of::<V>() != 0,

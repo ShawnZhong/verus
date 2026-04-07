@@ -412,12 +412,17 @@ impl<T> PointsTo<T> {
         self.as_unaligned().ptr_bounds()
     }
 
-    /// Guarantees that the memory ranges associated with two permissions will not overlap,
-    /// provided that both `S` and `T` are non-zero-sized.
-    /// This is true because you cannot have two permissions to the same memory,
-    /// and it implies the pointers have distinct addresses.
+    /// Guarantees that the memory ranges associated with two distinct, non-ZST permissions will not overlap,
+    /// since you cannot have two permissions to the same memory.
+    /// (`self` is an &mut reference to enforce distinctness,
+    /// so you cannot pass the same PointsTo as both arguments.)
+    /// Since both S and T are non-zero-sized, this implies the pointers have distinct addresses.
     ///
-    /// Note: Here `self` is a &mut reference so that you cannot pass the same PointsTo as both arguments.
+    /// Note: If either S or T is zero-sized, we get disjointness "for free" without having to call this axiom,
+    /// since the empty memory range corresponding to a ZST cannot possibly intersect with any other memory.
+    /// However, note that if one type is a ZST and the other is a non-ZST,
+    /// the disjointness definition as stated here here does not hold,
+    /// since the ZST pointer could be in the middle of the non-ZST's range.
     pub proof fn is_disjoint<S>(tracked &mut self, tracked other: &PointsTo<S>)
         requires
             size_of::<T>() != 0,
@@ -509,12 +514,17 @@ impl<T> PointsToUnaligned<T> {
                 + self.ptr()@.provenance.alloc_len(),
     ;
 
-    /// Guarantees that the memory ranges associated with two permissions will not overlap,
-    /// provided that both `S` and `T` are non-zero-sized.
-    /// This is true because you cannot have two permissions to the same memory,
-    /// and it implies the pointers have distinct addresses.
+    /// Guarantees that the memory ranges associated with two distinct, non-ZST permissions will not overlap,
+    /// since you cannot have two permissions to the same memory.
+    /// (`self` is an &mut reference to enforce distinctness,
+    /// so you cannot pass the same PointsTo as both arguments.)
+    /// Since both S and T are non-zero-sized, this implies the pointers have distinct addresses.
     ///
-    /// Note: Here `self` is a &mut reference so that you cannot pass the same PointsToUnaligned as both arguments.
+    /// Note: If either S or T is zero-sized, we get disjointness "for free" without having to call this axiom,
+    /// since the empty memory range corresponding to a ZST cannot possibly intersect with any other memory.
+    /// However, note that if one type is a ZST and the other is a non-ZST,
+    /// the disjointness definition as stated here here does not hold,
+    /// since the ZST pointer could be in the middle of the non-ZST's range.
     pub axiom fn is_disjoint<S>(tracked &mut self, tracked other: &PointsToUnaligned<S>)
         requires
             size_of::<T>() != 0,
@@ -820,10 +830,17 @@ impl<T> PointsTo<[T]> {
         ua.cast_points_to_unaligned::<V>()
     }
 
-    /// Guarantees that the memory ranges associated with two permissions will not overlap,
-    /// provided that both `S` and `T` are non-zero-sized.
-    /// This is true because you cannot have two permissions to the same memory,
-    /// and it implies the pointers have distinct addresses.
+    /// Guarantees that the memory ranges associated with two distinct, non-ZST permissions will not overlap,
+    /// since you cannot have two permissions to the same memory.
+    /// (`self` is an &mut reference to enforce distinctness,
+    /// so you cannot pass the same PointsTo as both arguments.)
+    /// Since both S and T are non-zero-sized, this implies the pointers have distinct addresses.
+    ///
+    /// Note: If either S or T is zero-sized, we get disjointness "for free" without having to call this axiom,
+    /// since the empty memory range corresponding to a ZST cannot possibly intersect with any other memory.
+    /// However, note that if one type is a ZST and the other is a non-ZST,
+    /// the disjointness definition as stated here here does not hold,
+    /// since the ZST pointer could be in the middle of the non-ZST's range.
     pub proof fn is_disjoint<S>(tracked &mut self, tracked other: &PointsTo<[S]>)
         requires
             size_of::<T>() * old(self).mem_contents_seq().len() != 0,
@@ -1017,10 +1034,17 @@ impl<T> PointsToUnaligned<[T]> {
                 <= self.ptr()@.provenance.start_addr() + self.ptr()@.provenance.alloc_len(),
     ;
 
-    /// Guarantees that the memory ranges associated with two permissions will not overlap,
-    /// provided that both `S` and `T` are non-zero-sized.
-    /// This is true because you cannot have two permissions to the same memory,
-    /// and it implies the pointers have distinct addresses.
+    /// Guarantees that the memory ranges associated with two distinct, non-ZST permissions will not overlap,
+    /// since you cannot have two permissions to the same memory.
+    /// (`self` is an &mut reference to enforce distinctness,
+    /// so you cannot pass the same PointsTo as both arguments.)
+    /// Since both S and T are non-zero-sized, this implies the pointers have distinct addresses.
+    ///
+    /// Note: If either S or T is zero-sized, we get disjointness "for free" without having to call this axiom,
+    /// since the empty memory range corresponding to a ZST cannot possibly intersect with any other memory.
+    /// However, note that if one type is a ZST and the other is a non-ZST,
+    /// the disjointness definition as stated here here does not hold,
+    /// since the ZST pointer could be in the middle of the non-ZST's range.
     pub axiom fn is_disjoint<S>(tracked &mut self, tracked other: &PointsToUnaligned<[S]>)
         requires
             size_of::<T>() * old(self).mem_contents_seq().len() != 0,
