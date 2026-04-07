@@ -3623,8 +3623,10 @@ impl Visitor {
                     #vstd::prelude::spec_eq(#x_iter_name.index.view(), #x_iter_name.seq().len()),
                     true,
             );
-            // REVIEW: Do we need to combine user_ensures.attrs?
             if let Some(user_ensures) = ensures {
+                for attr in user_ensures.attrs {
+                    auto_ensures.attrs.push(attr);
+                }
                 for expr in user_ensures.exprs.exprs {
                     auto_ensures.exprs.exprs.insert(0, expr);
                 }
