@@ -3637,7 +3637,7 @@ impl Visitor {
         let body_exec = Expr::Verbatim(quote_spanned_vstd!(vstd, span => {
             #[verus::internal(spec)]
             #[verus::internal(unwrapped_binding)]
-            let mut #x_iter_body_old; // REVIEW: We appear to need this to be mut so we can initialize it in a separate proof block
+            let #x_iter_body_old;
             #[verifier::proof_block]
             {
                 #x_iter_body_old = #x_iter_name;
@@ -3652,8 +3652,8 @@ impl Visitor {
             };
             let #pat = VERUS_loop_next;
             #[verus::internal(spec)]
-            #[verus::internal(unwrapped_binding)] // REVIEW: We appear to need this to be mut so we can initialize it in a separate proof block
-            let mut #x_iter_name;
+            #[verus::internal(unwrapped_binding)]
+            let #x_iter_name;
             #[verifier::proof_block]
             {
                 #x_iter_name = #x_iter_body_old;
@@ -3683,7 +3683,7 @@ impl Visitor {
             #[allow(non_snake_case)]
             #[verus::internal(spec)]
             #[verus::internal(unwrapped_binding)]
-            let mut #x_snapshot;    // REVIEW: We appear to need this to be mut so we can initialize it in a separate proof block
+            let #x_snapshot;
             #[verifier::proof_block]
             {
                 #x_snapshot = #x_wrapped_iter.snapshot.view();
