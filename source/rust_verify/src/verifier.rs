@@ -8,7 +8,7 @@ use crate::externs::VerusExterns;
 use crate::spans::{SpanContext, SpanContextX, from_raw_span};
 use crate::user_filter::UserFilter;
 use crate::util::{HashMapAbsorbWith, error};
-use crate::verus_items::VerusItems;
+use crate::verus_items::{VerusItem, VerusItems};
 use air::ast::AssertId;
 use air::ast::{Command, CommandX, Commands};
 use air::context::{QueryContext, SmtSolver, ValidityResult};
@@ -94,9 +94,18 @@ impl air::messages::Diagnostics for Reporter<'_> {
 
         let mut multispan = MultiSpan::from_spans(v);
 
-        for MessageLabel { note, span: sp, is_proof_note } in &msg.labels {
+        let mut replacement_error_note: Option<String> = None;
+        for MessageLabel { note, span: sp, is_proof_note, is_custom_err } in &msg.labels {
+            let span = self.spans.from_air_span(&sp, Some(self.source_map));
+            if *is_custom_err {
+                if replacement_error_note.is_none() {
+                    replacement_error_note = Some(note.clone());
+                }
+                continue;
+            }
+
             let note = if *is_proof_note { format!("note: {}", note) } else { note.clone() };
-            if let Some(span) = self.spans.from_air_span(&sp, Some(self.source_map)) {
+            if let Some(span) = span {
                 multispan.push_span_label(span, note);
             } else {
                 dbg!(&note, &sp.as_string);
@@ -127,7 +136,9 @@ impl air::messages::Diagnostics for Reporter<'_> {
                 &msg.help,
             ),
             MessageLevel::Error => emit_with_diagnostic_details(
-                self.compiler_diagnostics.handle().struct_err(msg.note.clone()),
+                self.compiler_diagnostics
+                    .handle()
+                    .struct_err(replacement_error_note.clone().unwrap_or_else(|| msg.note.clone())),
                 multispan,
                 &msg.help,
             ),
@@ -911,7 +922,7 @@ impl Verifier {
                     // Collect `proof_note` labels related to this failure.
                     let mut proof_notes = HashSet::new();
                     for label in &error.labels {
-                        if label.is_proof_note {
+                        if label.is_proof_note && !label.is_custom_err {
                             proof_notes.insert(label.note.clone());
                         }
                     }
@@ -962,7 +973,7 @@ impl Verifier {
                 }
                 ValidityResult::UnexpectedOutput(err) => {
                     util::PANIC_ON_DROP_VEC.store(false, std::sync::atomic::Ordering::SeqCst);
-                    panic!("unexpected output from solver: {}", err);
+                    panic!("unexpected output from solver: {} {}", &context.span.as_string, err);
                 }
             }
         }
@@ -2680,6 +2691,11 @@ impl Verifier {
             })
         };
 
+        if !verus_items.name_to_id.contains_key(&VerusItem::ErasedGhostValue) {
+            let err = crate::util::no_builtin_err(self.air_no_span.as_ref().unwrap());
+            return Err((vec![err], vec![]));
+        }
+
         let mut crate_names: Vec<String> = vec![crate_name.clone()];
         crate_names.extend(other_crate_names.into_iter());
         // TODO vec![vir::verus_builtins::verus_builtin_krate(&self.air_no_span.clone().unwrap())];
@@ -2807,6 +2823,26 @@ impl Verifier {
         );
         let vir_crate =
             vir::traits::merge_external_traits(vir_crate).map_err(map_err_diagnostics)?;
+
+        if self.args.log_all || self.args.log_args.log_impl_names {
+            let mut file = self
+                .create_log_file(None, crate::config::IMPL_NAMES_SUFFIX)
+                .map_err(map_err_diagnostics)?;
+            for imp in &vir_crate.trait_impls {
+                let ts: Vec<String> =
+                    imp.x.trait_typ_args.iter().map(vir::ast_util::typ_to_diagnostic_str).collect();
+                writeln!(
+                    &mut file,
+                    "{}   ###   {}   ###   {}   ###   {}",
+                    vir::ast_util::path_as_friendly_rust_name(&imp.x.impl_path),
+                    vir::ast_util::path_as_friendly_rust_name(&imp.x.trait_path),
+                    &ts.join(", "),
+                    &imp.span.as_string,
+                )
+                .map_err(|e| io_vir_err("log_impl_names".to_string(), e))
+                .map_err(map_err_diagnostics)?;
+            }
+        }
 
         Arc::make_mut(&mut current_vir_crate).arch.word_bits = vir_crate.arch.word_bits;
 
@@ -3092,7 +3128,7 @@ pub(crate) static BODY_HIR_ID_TO_REVEAL_PATH_RES: std::sync::RwLock<
 > = std::sync::RwLock::new(None);
 
 fn hir_crate<'tcx>(tcx: TyCtxt<'tcx>, _: ()) -> rustc_hir::Crate<'tcx> {
-    let mut crate_ = (rustc_interface::DEFAULT_QUERY_PROVIDERS.hir_crate)(tcx, ());
+    let mut crate_ = (rustc_interface::DEFAULT_QUERY_PROVIDERS.queries.hir_crate)(tcx, ());
     crate::hir_hide_reveal_rewrite::hir_hide_reveal_rewrite(&mut crate_, tcx);
     crate_
 }
@@ -3127,31 +3163,32 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
 
         if self.verifier.args.no_lifetime {
             config.override_queries = Some(|_session, providers| {
-                providers.hir_crate = hir_crate;
-                providers.mir_const_qualif = |_, _| rustc_middle::mir::ConstQualifs::default();
-                providers.lint_mod = |_, _| {};
-                providers.check_liveness = |_, _| DenseBitSet::new_empty(0);
-                providers.check_mod_deathness = |_, _| {};
+                providers.queries.hir_crate = hir_crate;
+                providers.queries.mir_const_qualif =
+                    |_, _| rustc_middle::mir::ConstQualifs::default();
+                providers.queries.lint_mod = |_, _| {};
+                providers.queries.check_liveness = |_, _| DenseBitSet::new_empty(0);
+                providers.queries.check_mod_deathness = |_, _| {};
 
-                providers.mir_borrowck =
+                providers.queries.mir_borrowck =
                     |tcx, _local_def_id| Ok(tcx.arena.alloc(Default::default()));
             });
         } else {
             config.override_queries = Some(|_session, providers| {
-                providers.hir_crate = hir_crate;
-                providers.mir_const_qualif = |_, _| rustc_middle::mir::ConstQualifs::default();
-                providers.lint_mod = |_, _| {};
-                providers.check_liveness = |_, _| DenseBitSet::new_empty(0);
-                providers.check_mod_deathness = |_, _| {};
+                providers.queries.hir_crate = hir_crate;
+                providers.queries.mir_const_qualif =
+                    |_, _| rustc_middle::mir::ConstQualifs::default();
+                providers.queries.lint_mod = |_, _| {};
+                providers.queries.check_liveness = |_, _| DenseBitSet::new_empty(0);
+                providers.queries.check_mod_deathness = |_, _| {};
 
                 rustc_mir_build_verus::verus_provide(providers);
-
-                providers.mir_built = |tcx, def| {
+                providers.queries.mir_built = |tcx, def| {
                     // We need to override this to call our verus of build_mir.
                     // mir_built is defined in the crate rustc_mir_transform, which I prefer
                     // not to fork. The actual implementation of mir_built is more complicated
                     // than this, but this seems to be the essential functionality.
-                    let body = rustc_mir_build_verus::builder::build_mir(tcx, def);
+                    let body = rustc_mir_build_verus::builder::build_mir_inner_impl(tcx, def);
                     //let pass = rustc_mir_transform::simplify::SimplifyCfg::Initial;
                     //pass.run_pass(tcx, &mut body);
                     tcx.alloc_steal_mir(body)
@@ -3160,13 +3197,15 @@ impl rustc_driver::Callbacks for VerifierCallbacksEraseMacro {
                 // check_well_formed when called on an OpaqueTy will trigger mir_borrowck to run.
                 // This happens earlier than we'd like, so we disable it.
                 // TODO: when we support opaque types we should run this check later
-                providers.check_well_formed =
+                providers.queries.check_well_formed =
                     |tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId| {
                         let node = tcx.hir_node_by_def_id(def_id);
                         if matches!(node, rustc_hir::Node::OpaqueTy(_)) {
                             return Ok(());
                         }
-                        (rustc_interface::DEFAULT_QUERY_PROVIDERS.check_well_formed)(tcx, def_id)
+                        (rustc_interface::DEFAULT_QUERY_PROVIDERS.queries.check_well_formed)(
+                            tcx, def_id,
+                        )
                     };
             });
         }

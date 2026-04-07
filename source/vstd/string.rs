@@ -1,25 +1,32 @@
 #![feature(rustc_attrs)]
 #![allow(unused_imports)]
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 use alloc::str::Chars;
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 use alloc::string::{self, String, ToString};
 
+#[cfg(verus_keep_ghost)]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
+use super::std_specs::iter::IteratorSpec;
 use super::prelude::*;
 use super::seq::Seq;
-#[cfg(verus_keep_ghost)]
-use super::std_specs::iter::IteratorSpec;
+use super::slice::*;
+use super::utf8::*;
 use super::view::*;
 
 verus! {
 
+broadcast use {super::seq::group_seq_axioms, super::slice::group_slice_axioms};
+
+#[cfg(not(verus_verify_core))]
 impl View for str {
     type V = Seq<char>;
 
     uninterp spec fn view(&self) -> Seq<char>;
 }
 
+#[cfg(not(verus_verify_core))]
 impl DeepView for str {
     type V = Seq<char>;
 
@@ -28,44 +35,126 @@ impl DeepView for str {
     }
 }
 
-pub uninterp spec fn str_slice_is_ascii(s: &str) -> bool;
-
-#[verifier::when_used_as_spec(str_slice_is_ascii)]
-pub assume_specification[ str::is_ascii ](s: &str) -> (b: bool)
-    ensures
-        b == str_slice_is_ascii(s),
-;
-
-pub open spec fn new_strlit_spec(s: &str) -> &str {
-    s
+#[cfg(not(verus_verify_core))]
+pub trait StringSliceAdditionalSpecFns {
+    spec fn spec_bytes(&self) -> Seq<u8>;
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(not(verus_verify_core))]
+impl StringSliceAdditionalSpecFns for str {
+    open spec fn spec_bytes(&self) -> Seq<u8> {
+        encode_utf8(self@)
+    }
+}
+
+#[cfg(not(verus_verify_core))]
+pub open spec fn is_ascii(s: &str) -> bool {
+    is_ascii_chars(s@)
+}
+
+#[cfg(not(verus_verify_core))]
+pub broadcast proof fn is_ascii_spec_bytes(s: &str)
+    ensures
+        #[trigger] is_ascii(s) ==> #[trigger] s.spec_bytes() =~= Seq::new(
+            s@.len(),
+            |i| s@.index(i) as u8,
+        ),
+{
+    if (is_ascii(s)) {
+        is_ascii_chars_encode_utf8(s@);
+    }
+}
+
+#[cfg(not(verus_verify_core))]
+pub broadcast proof fn is_ascii_concat(s1: &str, s2: &str, s3: &str)
+    requires
+        s1@ =~= s2@ + s3@,
+    ensures
+        #![trigger s2@ + s3@, is_ascii(s1), is_ascii(s2), is_ascii(s3)]
+        is_ascii(s1) <==> is_ascii(s2) && is_ascii(s3),
+{
+    broadcast use is_ascii_chars_concat;
+
+    if (is_ascii(s1)) {
+        is_ascii_chars_concat(s1@, s2@, s3@);
+    }
+}
+
+#[cfg(not(verus_verify_core))]
+#[verifier::when_used_as_spec(is_ascii)]
+pub assume_specification[ str::is_ascii ](s: &str) -> (b: bool)
+    ensures
+        b == is_ascii(s),
+;
+
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 use crate::alloc::borrow::ToOwned;
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification[ str::to_owned ](s: &str) -> (res: String)
     ensures
         s@ == res@,
-        s.is_ascii() == res.is_ascii(),
 ;
 
-#[cfg(feature = "alloc")]
+#[cfg(not(verus_verify_core))]
+pub assume_specification[ str::as_bytes ](s: &str) -> (b: &[u8])
+    ensures
+        b@ == s.spec_bytes(),
+;
+
+#[cfg(not(verus_verify_core))]
+#[verifier::allow_in_spec]
+pub assume_specification[ str::len ](s: &str) -> usize
+    returns
+        s.spec_bytes().len() as usize,
+;
+
+#[cfg(not(verus_verify_core))]
+#[verifier::allow_in_spec]
+pub assume_specification[ str::is_empty ](s: &str) -> bool
+    returns
+        s@.len() == 0,
+;
+
+#[cfg(not(verus_verify_core))]
+#[verifier::allow_in_spec]
+pub assume_specification[ str::is_char_boundary ](s: &str, index: usize) -> bool
+    returns
+        is_char_boundary(s.spec_bytes(), index as int),
+;
+
+#[cfg(not(verus_verify_core))]
+pub assume_specification[ str::split_at ](s: &str, mid: usize) -> (res: (&str, &str))
+    requires
+        is_char_boundary(s.spec_bytes(), mid as int),
+    ensures
+        res.0.spec_bytes() =~= s.spec_bytes().subrange(0, mid as int),
+        res.1.spec_bytes() =~= s.spec_bytes().subrange(mid as int, s.spec_bytes().len() as int),
+;
+
+#[cfg(not(verus_verify_core))]
+pub assume_specification[ str::from_utf8_unchecked ](v: &[u8]) -> (res: &str)
+    requires
+        valid_utf8(v@),
+    ensures
+        res.spec_bytes() =~= v@,
+;
+
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub uninterp spec fn to_string_from_display_ensures<T: core::fmt::Display + ?Sized>(
     t: &T,
     s: String,
 ) -> bool;
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub broadcast proof fn to_string_from_display_ensures_for_str(t: &str, res: String)
     ensures
-        #[trigger] to_string_from_display_ensures::<str>(t, res) <==> (t@ == res@ && t.is_ascii()
-            == res.is_ascii()),
+        #[trigger] to_string_from_display_ensures::<str>(t, res) <==> (t@ == res@),
 {
     admit();
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification<T: core::fmt::Display + ?Sized>[ <T as ToString>::to_string ](
     t: &T,
 ) -> (res: String)
@@ -73,6 +162,7 @@ pub assume_specification<T: core::fmt::Display + ?Sized>[ <T as ToString>::to_st
         to_string_from_display_ensures::<T>(t, res),
 ;
 
+#[cfg(not(verus_verify_core))]
 #[verifier::external]
 pub trait StrSliceExecFns {
     fn unicode_len(&self) -> usize;
@@ -89,6 +179,7 @@ pub trait StrSliceExecFns {
     fn as_bytes_vec(&self) -> alloc::vec::Vec<u8>;
 }
 
+#[cfg(not(verus_verify_core))]
 impl StrSliceExecFns for str {
     /// The len() function in rust returns the byte length.
     /// It is more useful to talk about the length of characters and therefore this function was added.
@@ -109,7 +200,6 @@ impl StrSliceExecFns for str {
             i < self@.len(),
         ensures
             self@.index(i as int) == c,
-            self.is_ascii() ==> forall|i: int| i < self@.len() ==> (self@.index(i) as nat) < 256,
     {
         self.chars().nth(i).unwrap()
     }
@@ -118,23 +208,21 @@ impl StrSliceExecFns for str {
     fn substring_ascii<'a>(&'a self, from: usize, to: usize) -> (ret: &'a str)
         requires
             self.is_ascii(),
-            from < self@.len(),
-            to <= self@.len(),
+            from <= to <= self@.len(),
         ensures
             ret@ == self@.subrange(from as int, to as int),
-            ret.is_ascii() == self.is_ascii(),
+            ret.is_ascii(),
     {
+        // Range::index panics if from > to or from > self@.len()
         &self[from..to]
     }
 
     #[verifier::external_body]
     fn substring_char<'a>(&'a self, from: usize, to: usize) -> (ret: &'a str)
         requires
-            from < self@.len(),
-            to <= self@.len(),
+            from <= to <= self@.len(),
         ensures
             ret@ == self@.subrange(from as int, to as int),
-            ret.is_ascii() == self.is_ascii(),
     {
         let mut char_pos = 0;
         let mut byte_start = None;
@@ -158,78 +246,71 @@ impl StrSliceExecFns for str {
         }
         let byte_start = byte_start.unwrap();
         let byte_end = byte_end.unwrap();
+        // Range::index panics if from > to or from > self@.len()
         &self[byte_start..byte_end]
     }
 
-    #[verifier::external_body]
     fn get_ascii(&self, i: usize) -> (b: u8)
         requires
             self.is_ascii(),
+            i < self@.len(),
         ensures
-            self.view().index(i as int) as u8 == b,
+            self@.index(i as int) as u8 == b,
     {
+        broadcast use is_ascii_spec_bytes;
+        // panics if i is not a valid index
+
         self.as_bytes()[i]
     }
 
-    // TODO:This should be the as_bytes function after
-    // slice support is added
-    // pub fn as_bytes<'a>(&'a [u8]) -> (ret: &'a [u8])
     #[cfg(feature = "alloc")]
-    #[verifier::external_body]
     fn as_bytes_vec(&self) -> (ret: alloc::vec::Vec<u8>)
-        requires
-            self.is_ascii(),
         ensures
-            ret.view() == Seq::new(self.view().len(), |i| self.view().index(i) as u8),
+            ret@ == self.spec_bytes(),
     {
-        let mut v = alloc::vec::Vec::new();
-        for c in self.as_bytes().iter() {
-            v.push(*c);
-        }
-        v
+        slice_to_vec(self.as_bytes())
     }
 }
 
-pub broadcast axiom fn axiom_str_literal_is_ascii<'a>(s: &'a str)
-    ensures
-        #[trigger] s.is_ascii() == strslice_is_ascii(s),
-;
-
+#[cfg(not(verus_verify_core))]
 pub broadcast axiom fn axiom_str_literal_len<'a>(s: &'a str)
     ensures
         #[trigger] s@.len() == strslice_len(s),
 ;
 
+#[cfg(not(verus_verify_core))]
 pub broadcast axiom fn axiom_str_literal_get_char<'a>(s: &'a str, i: int)
     ensures
         #[trigger] s@.index(i) == strslice_get_char(s, i),
 ;
 
-#[cfg(not(feature = "alloc"))]
+#[cfg(all(not(feature = "alloc"), not(verus_verify_core)))]
 pub broadcast group group_string_axioms {
-    axiom_str_literal_is_ascii,
     axiom_str_literal_len,
     axiom_str_literal_get_char,
+    is_ascii_spec_bytes,
+    is_ascii_concat,
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub broadcast group group_string_axioms {
-    axiom_str_literal_is_ascii,
     axiom_str_literal_len,
     axiom_str_literal_get_char,
     to_string_from_display_ensures_for_str,
     axiom_spec_iter,
     next_postcondition,
+    is_ascii_spec_bytes,
+    is_ascii_concat,
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 impl View for String {
     type V = Seq<char>;
 
     uninterp spec fn view(&self) -> Seq<char>;
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 impl DeepView for String {
     type V = Seq<char>;
 
@@ -238,78 +319,71 @@ impl DeepView for String {
     }
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 #[verifier::external_type_specification]
 #[verifier::external_body]
 pub struct ExString(String);
 
-#[cfg(feature = "alloc")]
-pub uninterp spec fn string_is_ascii(s: &String) -> bool;
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
+pub open spec fn string_is_ascii(s: &String) -> bool {
+    is_ascii_chars(s@)
+}
 
-#[cfg(feature = "alloc")]
-#[verifier::when_used_as_spec(string_is_ascii)]
-pub assume_specification[ String::is_ascii ](s: &String) -> (b: bool)
-    ensures
-        b == string_is_ascii(s),
-;
-
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification<'a>[ String::as_str ](s: &'a String) -> (res: &'a str)
     ensures
         res@ == s@,
-        s.is_ascii() == res.is_ascii(),
 ;
 
 // same as above
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification<'a>[ <String as core::ops::Deref>::deref ](s: &'a String) -> (res: &'a str)
     ensures
         res@ == s@,
-        s.is_ascii() == res.is_ascii(),
 ;
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification[ <String as Clone>::clone ](s: &String) -> (res: String)
     ensures
         res == s,
 ;
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification[ <String as PartialEq>::eq ](s: &String, other: &String) -> (res: bool)
     ensures
         res == (s@ == other@),
 ;
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification[ String::new ]() -> (res: String)
     ensures
         res@ == Seq::<char>::empty(),
-        string_is_ascii(&res),
 ;
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub assume_specification[ <String as core::default::Default>::default ]() -> (r: String)
     ensures
         r@ == Seq::<char>::empty(),
-        string_is_ascii(&r),
 ;
 
-#[cfg(feature = "alloc")]
-#[verifier::external]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub trait StringExecFnsIsAscii: Sized {
     fn is_ascii(&self) -> bool;
 }
 
-#[cfg(feature = "alloc")]
-#[verifier::external]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 impl StringExecFnsIsAscii for String {
     #[inline(always)]
-    fn is_ascii(&self) -> bool {
+    #[verifier::when_used_as_spec(string_is_ascii)]
+    fn is_ascii(&self) -> (ret: bool)
+        ensures
+            ret == string_is_ascii(self),
+    {
         self.as_str().is_ascii()
     }
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 #[verifier::external]
 pub trait StringExecFns: Sized {
     fn from_str<'a>(s: &'a str) -> String;
@@ -319,13 +393,12 @@ pub trait StringExecFns: Sized {
     fn concat<'b>(self, other: &'b str) -> String;
 }
 
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 impl StringExecFns for String {
     #[verifier::external_body]
     fn from_str<'a>(s: &'a str) -> (ret: String)
         ensures
             s@ == ret@,
-            s.is_ascii() == ret.is_ascii(),
     {
         s.to_string()
     }
@@ -334,7 +407,6 @@ impl StringExecFns for String {
     fn append<'a, 'b>(&'a mut self, other: &'b str)
         ensures
             self@ == old(self)@ + other@,
-            self.is_ascii() == old(self).is_ascii() && other.is_ascii(),
     {
         *self += other;
     }
@@ -343,7 +415,6 @@ impl StringExecFns for String {
     fn concat<'b>(self, other: &'b str) -> (ret: String)
         ensures
             ret@ == self@ + other@,
-            ret.is_ascii() == self.is_ascii() && other.is_ascii(),
     {
         self + other
     }
@@ -353,7 +424,7 @@ impl StringExecFns for String {
 // so we specify that type here.
 #[verifier::external_type_specification]
 #[verifier::external_body]
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", not(verus_verify_core)))]
 pub struct ExChars<'a>(Chars<'a>);
 
 // To allow reasoning about the "contents" of the string iterator, without using
@@ -438,7 +509,6 @@ pub broadcast axiom fn next_postcondition<'a>(
         ),
 // TODO: These are copied from the Iterator::next function.  Eventually, we should
 //       relax Verus's retrictions and allow this function to inherit those specs.
-
     ensures
 // The iterator consistently obeys, completes, and decreases throughout its lifetime
 

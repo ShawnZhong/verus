@@ -131,6 +131,9 @@ test_verify_one_file! {
                     i == it.index@,
                     it.seq().unref() == seq![0u32, 2u32, 4u32],
             {
+                // TODO: We shouldn't need this assertion, but it seems to help 
+                //       (possibly by instantiating the existential quantifier in `contains`)
+                assert(x == vstd::std_specs::slice::into_iter_elts(it.snapshot@)[it.index@]);
                 assert(it.seq().unref().contains(*x));
                 assert(x < 5);
                 assert(x % 2 == 0);
@@ -170,4 +173,194 @@ test_verify_one_file! {
             assert(a == b);
         }
     } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] test_slice_index verus_code! {
+        use std::ops::Index;
+        use vstd::prelude::*;
+
+        fn element(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = s[2];
+            assert(x == s[2]);
+            assert(x == s[3]); // FAILS
+        }
+
+        fn element_bounds(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = s[7]; // FAILS
+        }
+
+        fn element_index(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = *s.index(2);
+            assert(x == s[2]);
+            assert(x == s[3]); // FAILS
+        }
+
+        fn element_index_bounds(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = *s.index(7); // FAILS
+        }
+
+        fn range(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = &s[1..3];
+            assert(x@ == s@.subrange(1, 3));
+            assert(x@ == s@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_bounds(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = &s[3..7]; // FAILS
+        }
+
+        fn range_index(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = s.index(1..3);
+            assert(x@ == s@.subrange(1, 3));
+            assert(x@ == s@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_index_bounds(s: &[u8]) {
+            assume(s.len() == 5);
+            let x = s.index(3..7); // FAILS
+        }
+    } => Err(err) => assert_fails(err, 8)
+}
+
+test_verify_one_file! {
+    #[test] test_array_index verus_code! {
+        use std::ops::Index;
+        use vstd::prelude::*;
+
+        fn element(a: &[u8; 5]) {
+            let x = a[2];
+            assert(x == a[2]);
+            assert(x == a[3]); // FAILS
+        }
+
+        fn element_bounds(a: &[u8; 5]) {
+            let x = a[7]; // FAILS
+        }
+
+        fn element_index(a: &[u8; 5]) {
+            let x = *a.index(2);
+            assert(x == a[2]);
+            assert(x == a[3]); // FAILS
+        }
+
+        fn element_index_bounds(a: &[u8; 5]) {
+            let x = *a.index(7); // FAILS
+        }
+
+        fn range(a: &[u8; 5]) {
+            let x = &a[1..3];
+            assert(x@ == a@.subrange(1, 3));
+            assert(x@ == a@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_bounds(a: &[u8; 5]) {
+            let x = &a[3..7]; // FAILS
+        }
+
+        fn range_index(a: &[u8; 5]) {
+            let x = a.index(1..3);
+            assert(x@ == a@.subrange(1, 3));
+            assert(x@ == a@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_index_bounds(a: &[u8; 5]) {
+            let x = a.index(3..7); // FAILS
+        }
+    } => Err(err) => assert_fails(err, 8)
+}
+
+test_verify_one_file! {
+    #[test] test_vec_index verus_code! {
+        use std::ops::Index;
+        use vstd::prelude::*;
+
+        fn element(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = v[2];
+            assert(x == v[2]);
+            assert(x == v[3]); // FAILS
+        }
+
+        fn element_bounds(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = v[7]; // FAILS
+        }
+
+        fn element_index(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = *v.index(2);
+            assert(x == v[2]);
+            assert(x == v[3]); // FAILS
+        }
+
+        fn element_index_bounds(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = *v.index(7); // FAILS
+        }
+
+        fn range(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = &v[1..3];
+            assert(x@ == v@.subrange(1, 3));
+            assert(x@ == v@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_bounds(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = &v[3..7]; // FAILS
+        }
+
+        fn range_index(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = v.index(1..3);
+            assert(x@ == v@.subrange(1, 3));
+            assert(x@ == v@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_index_bounds(v: &Vec<u8>) {
+            assume(v.len() == 5);
+            let x = v.index(3..7); // FAILS
+        }
+    } => Err(err) => assert_fails(err, 8)
+}
+
+test_verify_one_file! {
+    #[test] test_other_index verus_code! {
+        use std::ops::Index;
+        use vstd::prelude::*;
+
+        fn range(v: Vec<u8>) {
+            assume(v.len() == 5);
+            let x = &v[1..3];
+            assert(x@ == v@.subrange(1, 3));
+            assert(x@ == v@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_arc(v: std::sync::Arc<Vec<u8>>) {
+            assume(v.len() == 5);
+            let x = &v[1..3];
+            assert(x@ == v@.subrange(1, 3));
+            assert(x@ == v@.subrange(2, 4)); // FAILS
+        }
+
+        fn range_deref<A: std::ops::Deref<Target = Vec<u8>>>(v: &A) {
+            let x = &v[1..3]; // FAILS
+        }
+
+        fn element_index<I: Index<usize, Output = u8>>(v: &I) {
+            let x = &v[1]; // FAILS
+        }
+
+        fn range_index<I: Index<std::ops::Range<usize>, Output = u8>>(v: &I) {
+            let x = &v[1..3]; // FAILS
+        }
+    } => Err(err) => assert_fails(err, 5)
 }

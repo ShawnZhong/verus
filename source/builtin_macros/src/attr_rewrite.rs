@@ -115,7 +115,7 @@ pub(crate) fn rewrite_verus_attribute(
     let mut contains_non_external = false;
     let mut contains_external = false;
     let mut spec_fun = None;
-    const VERIFY_ATTRS: [&str; 3] = ["rlimit", "spinoff_prover", "external_derive"];
+    const VERIFY_ATTRS: [&str; 4] = ["rlimit", "spinoff_prover", "external_derive", "ext_equal"];
     const DUAL_ATTR: &str = "dual_spec";
     const IGNORE_VERIFY_ATTRS: [&str; 3] =
         ["external", "external_body", "external_type_specification"];
@@ -181,9 +181,8 @@ pub(crate) fn rewrite_verus_attribute(
     }
 
     // Special handling for impl blocks, add marker attribute to each method for `#[verus_spec]`.
-    let mut impl_item_replacer = ImplItemReplacer { verify_const: true };
-    impl_item_replacer.visit_item_mut(&mut item);
-
+    let mut visitor = VerusVerifyVisitor { verify_const: true };
+    visitor.visit_item_mut(&mut item);
     let mut new_stream = quote_spanned! {item.span()=>
         #(#attributes)*
         #item
@@ -240,6 +239,9 @@ impl VisitMut for ExecReplacer {
     /// In order to apply `with` to expr/stmt without using unstable feature.
     /// proof_with!(Tracked(x), Ghost(y);
     /// f(a);
+    /// Also supports struct constructors with ghost/tracked fields:
+    /// proof_with!{ p: Tracked(p) }
+    /// STest { u }
     fn visit_block_mut(&mut self, block: &mut syn::Block) {
         syn::visit_mut::visit_block_mut(self, block);
 
@@ -277,14 +279,35 @@ impl VisitMut for ExecReplacer {
                     // do nothing
                 }
                 _ => {
-                    panic!("Expected a function call after proof_with! macro");
+                    panic!(
+                        "Expected a function call or struct constructor after proof_with! macro"
+                    );
                 }
             };
         }
     }
+
+    fn visit_expr_for_loop_mut(&mut self, for_loop: &mut syn::ExprForLoop) {
+        syn::visit_mut::visit_expr_for_loop_mut(self, for_loop);
+
+        if !self.erase.keep() {
+            return;
+        }
+
+        // In verification mode, even without verus spec on the loop, we still
+        // need to desugar the for loop.
+        // So, if there's no `verus_spec` attribute, we need to add an empty one.
+        if get_verus_spec(&for_loop.attrs).is_none() {
+            for_loop.attrs.push(crate::syntax::mk_rust_attr_syn(
+                for_loop.span(),
+                VERUS_SPEC,
+                TokenStream::new(),
+            ));
+        }
+    }
 }
 
-struct ImplItemReplacer {
+struct VerusVerifyVisitor {
     verify_const: bool,
 }
 
@@ -292,7 +315,17 @@ fn get_verus_spec(attrs: &[syn::Attribute]) -> Option<&syn::Attribute> {
     attrs.iter().find(|attr| attr.path().get_ident().map_or(false, |ident| ident == VERUS_SPEC))
 }
 
-impl VisitMut for ImplItemReplacer {
+impl VerusVerifyVisitor {
+    fn add_verus_spec_if_needed(&self, attrs: &mut Vec<syn::Attribute>, span: proc_macro2::Span) {
+        if !self.verify_const || get_verus_spec(attrs).is_some() {
+            return;
+        }
+
+        attrs.push(crate::syntax::mk_rust_attr_syn(span, VERUS_SPEC, TokenStream::new()));
+    }
+}
+
+impl VisitMut for VerusVerifyVisitor {
     fn visit_impl_item_fn_mut(&mut self, method: &mut syn::ImplItemFn) {
         syn::visit_mut::visit_impl_item_fn_mut(self, method);
         // Help verus_spec be aware that it is in impl function.
@@ -308,13 +341,14 @@ impl VisitMut for ImplItemReplacer {
 
     fn visit_impl_item_const_mut(&mut self, i: &mut syn::ImplItemConst) {
         syn::visit_mut::visit_impl_item_const_mut(self, i);
-        if !self.verify_const {
-            return;
-        }
-        // Add verus_spec if not exists
-        if get_verus_spec(&i.attrs).is_none() {
-            i.attrs.push(crate::syntax::mk_rust_attr_syn(i.span(), VERUS_SPEC, TokenStream::new()));
-        }
+        let span = i.span();
+        self.add_verus_spec_if_needed(&mut i.attrs, span);
+    }
+
+    fn visit_item_const_mut(&mut self, i: &mut syn::ItemConst) {
+        syn::visit_mut::visit_item_const_mut(self, i);
+        let span = i.span();
+        self.add_verus_spec_if_needed(&mut i.attrs, span);
     }
 }
 
@@ -700,6 +734,71 @@ fn rewrite_verus_spec_on_expr_local(
     tokens.into()
 }
 
+/// Wrap an expression with a `|=` follow clause, producing a tuple `(expr, follow)`.
+/// Used by both struct-constructor and function-call proof_with! handling.
+fn apply_follows(erase: &EraseGhost, expr: &mut Expr, follow_tokens: TokenStream) {
+    let follow: TokenStream =
+        syntax::rewrite_expr(erase.clone(), false, follow_tokens.into()).into();
+    *expr = Expr::Verbatim(quote_spanned!(expr.span() => (#expr, #follow)));
+}
+
+fn is_tracked_ghost_expr(expr: &verus_syn::Expr) -> bool {
+    // check expr is of the form Tracked(...) or Ghost(...)
+    if let verus_syn::Expr::Call(verus_syn::ExprCall { func, .. }) = expr {
+        if let verus_syn::Expr::Path(path) = func.as_ref() {
+            if let Some(ident) = path.path.get_ident() {
+                return ident == "Tracked" || ident == "Ghost";
+            }
+        }
+    }
+    false
+}
+
+/// Apply ghost/tracked fields in `with` clause to a struct constructor expression.
+/// Return Err if the ghost/tracked fields are not valid.
+fn apply_erased_fields<'a>(
+    erase: EraseGhost,
+    expr: &mut Expr,
+    erased_fields: impl Iterator<Item = &'a verus_syn::FieldValue>,
+) -> Result<(), ()> {
+    let syn::Expr::Struct(expr_struct) = expr else {
+        // If there's no struct constructor, we cannot apply ghost/tracked fields.
+        if let Some(field) = erased_fields.last() {
+            *expr = syn::Expr::Verbatim(quote_spanned! {field.span() =>
+                compile_error!("Ghost/tracked fields can only be applied to struct constructors.")
+            });
+            return Err(());
+        }
+        // No ghost/tracked fields, just return.
+        return Ok(());
+    };
+    for field in erased_fields {
+        let rewritten =
+            syntax::rewrite_expr(erase.clone(), false, field.expr.to_token_stream().into());
+        let verus_syn::Member::Named(field_name) = &field.member else {
+            *expr = syn::Expr::Verbatim(quote_spanned! {field.member.span() =>
+                compile_error!("A ghost/tracked field must be a named field.")
+            });
+            return Err(());
+        };
+        if !is_tracked_ghost_expr(&field.expr) {
+            *expr = syn::Expr::Verbatim(quote_spanned! {field.expr.span() =>
+                compile_error!("A ghost/tracked field must be a tracked/ghost expression. If you want to add ghost/tracked fields to a struct constructor, you should use $ident: Tracked/Ghost($ident).")
+            });
+            return Err(());
+        }
+        assert!(field.attrs.is_empty()); // guarded by verus_syn::WithSpecOnExpr parsing
+        let extra_field = syn::FieldValue {
+            attrs: vec![],
+            member: syn::Member::Named(field_name.clone()),
+            colon_token: field.colon_token.and_then(|c| Some(syn::Token![:](c.span()))),
+            expr: syn::Expr::Verbatim(rewritten.into()),
+        };
+        expr_struct.fields.push(extra_field);
+    }
+    return Ok(());
+}
+
 // Expand `with extra_in => extra_out` on a method call expr.
 // Return some pre-statements that needs to be declared before the expr.
 fn rewrite_with_expr(
@@ -707,7 +806,8 @@ fn rewrite_with_expr(
     expr: &mut Expr,
     call_with_spec: verus_syn::WithSpecOnExpr,
 ) -> Vec<verus_syn::Stmt> {
-    let verus_syn::WithSpecOnExpr { inputs, outputs, follows, .. } = call_with_spec;
+    let verus_syn::WithSpecOnExpr { inputs, outputs, follows, erased_fields, .. } = call_with_spec;
+
     if outputs.is_some() || inputs.len() > 0 {
         match expr {
             syn::Expr::Call(syn::ExprCall { func, .. }) => {
@@ -722,8 +822,13 @@ fn rewrite_with_expr(
                 *method = syn::Ident::new(&format!("{VERIFIED}_{x}"), x.span());
             }
             syn::Expr::Try(syn::ExprTry { expr, .. }) => {
-                let call_with_spec =
-                    verus_syn::WithSpecOnExpr { inputs, outputs, follows, ..call_with_spec };
+                let call_with_spec = verus_syn::WithSpecOnExpr {
+                    inputs,
+                    outputs,
+                    follows,
+                    erased_fields,
+                    ..call_with_spec
+                };
                 return rewrite_with_expr(erase, expr, call_with_spec);
             }
             _ => {
@@ -735,6 +840,9 @@ fn rewrite_with_expr(
         }
     }
 
+    if apply_erased_fields(erase.clone(), expr, erased_fields.iter()).is_err() {
+        return vec![];
+    }
     match expr {
         syn::Expr::Call(syn::ExprCall { args, .. })
         | syn::Expr::MethodCall(syn::ExprMethodCall { args, .. }) => {
@@ -774,9 +882,7 @@ fn rewrite_with_expr(
         vec![]
     };
     if let Some((_, follow)) = follows {
-        let follow: TokenStream =
-            syntax::rewrite_expr(erase.clone(), false, follow.into_token_stream().into()).into();
-        *expr = Expr::Verbatim(quote_spanned!(expr.span() => (#expr, #follow)));
+        apply_follows(&erase, expr, follow.into_token_stream());
     }
     x_declares
 }

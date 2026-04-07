@@ -400,6 +400,8 @@ test_verify_one_file! {
 
 test_verify_one_file! {
     #[test] lifetime_bounds_exec verus_code! {
+        use vstd::prelude::*;
+
         #[verifier(external_body)]
         pub fn exec_to_ref<'a, T: 'a>(t: T) -> (t2: &'a T)
             ensures t == *t2
@@ -1760,4 +1762,166 @@ test_verify_one_file! {
             }
         }
     } => Err(err) => assert_rust_error_msg(err, "use of moved value: `t`")
+}
+
+test_verify_one_file! {
+    #[test] lifetime_cfg_doesnt_delete_nodes_due_to_ghost_uninhabitness verus_code! {
+        proof fn test(nvr: !) { }
+        proof fn consume<T>(tracked t: T) { }
+        uninterp spec fn arbitrary<T>() -> T;
+
+        proof fn test2<T>(tracked t: T) {
+            test(arbitrary());
+
+            consume(t);
+            consume(t);
+        }
+    } => Err(err) => assert_rust_error_msg(err, "use of moved value: `t`")
+}
+
+test_verify_one_file! {
+    #[test] lifetime_cfg_doesnt_delete_nodes_due_to_ghost_uninhabitness2 verus_code! {
+        proof fn test(nvr: !) { }
+        proof fn consume<T>(tracked t: T) { }
+
+        proof fn test2<T>(nvr: !, tracked t: T) {
+            consume(t);
+            consume(t);
+        }
+    } => Err(err) => assert_rust_error_msg(err, "use of moved value: `t`")
+}
+
+test_verify_one_file! {
+    #[test] lifetime_cfg_doesnt_delete_nodes_due_to_ghost_uninhabitness3 verus_code! {
+        proof fn test(nvr: !) { }
+        proof fn consume<T>(tracked t: T) { }
+        uninterp spec fn spec_never() -> !;
+
+        proof fn test2<T>(tracked t: T) {
+            test(spec_never());
+
+            consume(t);
+            consume(t);
+        }
+    } => Err(err) => assert_vir_error_msg(err, "never-to-any coercion is not allowed in spec mode")
+}
+
+test_verify_one_file! {
+    #[test] lifetime_cfg_doesnt_delete_nodes_due_to_ghost_uninhabitness4 verus_code! {
+        proof fn consume<T>(tracked t: T) { }
+        uninterp spec fn arbitrary<T>() -> T;
+
+        proof fn proof_fn_returns_spec_never() -> ! {
+            arbitrary()
+        }
+
+        proof fn test2<T>(tracked t: T) {
+            proof_fn_returns_spec_never();
+
+            consume(t);
+            consume(t);
+        }
+    } => Err(err) => assert_vir_error_msg(err, "never-to-any coercion is not allowed in spec mode")
+}
+
+test_verify_one_file! {
+    #[ignore] #[test] lifetime_cfg_doesnt_delete_nodes_due_to_ghost_uninhabitness5 verus_code! {
+        #[verifier::external]
+        enum X { }
+
+        #[verifier::external_type_specification]
+        #[verifier::external_body]
+        struct ExX(X);
+
+        proof fn consume<T>(tracked t: T) { }
+        uninterp spec fn arbitrary<T>() -> T;
+
+        proof fn proof_fn_returns_spec_never() -> X {
+            arbitrary()
+        }
+
+        proof fn test2<T>(tracked t: T) {
+            proof_fn_returns_spec_never();
+
+            consume(t);
+            consume(t);
+        }
+    } => Err(err) => assert_rust_error_msg(err, "use of moved value: `t`")
+}
+
+test_verify_one_file! {
+    #[ignore] #[test] lifetime_cfg_doesnt_delete_nodes_due_to_ghost_uninhabitness6 verus_code! {
+        tracked struct X {
+            ghost g: !,
+        }
+
+        proof fn consume<T>(tracked t: T) { }
+
+        axiom fn proof_fn_returns_spec_never() -> (tracked x: X);
+
+        proof fn test2<T>(tracked t: T) {
+            proof_fn_returns_spec_never();
+
+            consume(t);
+            consume(t);
+        }
+    } => Err(err) => assert_rust_error_msg(err, "use of moved value: `t`")
+}
+
+test_verify_one_file! {
+    #[ignore] #[test] lifetime_cfg_doesnt_delete_nodes_due_to_ghost_uninhabitness7 verus_code! {
+        tracked struct X {
+            ghost g: !,
+        }
+
+        proof fn consume<T>(tracked t: T) { }
+
+        axiom fn proof_fn_returns_spec_never() -> (tracked x: X);
+
+        proof fn test2<T>(tracked t: T) {
+            proof_fn_returns_spec_never().g;
+
+            consume(t);
+            consume(t);
+        }
+    } => Err(err) => assert_rust_error_msg(err, "use of moved value: `t`")
+}
+
+test_verify_one_file! {
+    #[test] lifetime_cfg_delete_nodes_due_to_tracked_never_ok verus_code! {
+        proof fn consume<T>(tracked t: T) { }
+
+        axiom fn proof_fn_returns_spec_never() -> (tracked x: !);
+
+        #[allow(unreachable_code)]
+        proof fn test2<T>(tracked t: T) {
+            proof_fn_returns_spec_never();
+
+            consume(t);
+            consume(t);
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] lifetime_cfg_delete_nodes_due_to_tracked_empty_ok verus_code! {
+        #[verifier::external]
+        enum X { }
+
+        #[verifier::external_type_specification]
+        #[verifier::external_body]
+        struct ExX(X);
+
+        proof fn consume<T>(tracked t: T) { }
+
+        axiom fn proof_fn_returns_spec_never() -> (tracked x: X);
+
+        #[allow(unreachable_code)]
+        proof fn test2<T>(tracked t: T) {
+            proof_fn_returns_spec_never();
+
+            consume(t);
+            consume(t);
+        }
+    } => Ok(())
 }

@@ -1,8 +1,8 @@
 use crate::ast::{
     ArithOp, ArrayKind, AssertQueryMode, BinaryOp, BitwiseOp, Dt, FieldOpr, Fun, GenericBoundX,
     Ident, Idents, InequalityOp, IntRange, IntegerTypeBitwidth, IntegerTypeBoundKind, Mode, Path,
-    PathX, Primitive, SpannedTyped, Typ, TypDecoration, TypDecorationArg, TypX, Typs, UnaryOp,
-    UnaryOpr, UnwindSpec, VarAt, VarIdent, VariantCheck, VirErr, Visibility,
+    PathX, Primitive, ProofNoteLabel, SpannedTyped, Typ, TypDecoration, TypDecorationArg, TypX,
+    Typs, UnaryOp, UnaryOpr, UnwindSpec, VarAt, VarIdent, VariantCheck, VirErr, Visibility,
 };
 use crate::ast_util::{
     LowerUniqueVar, fun_as_friendly_rust_name, get_field, get_variant, typ_args_for_datatype_typ,
@@ -13,14 +13,13 @@ use crate::context::Ctx;
 use crate::def::{
     ARCH_SIZE, CommandsWithContext, CommandsWithContextX, FUEL_BOOL, FUEL_BOOL_DEFAULT,
     FUEL_DEFAULTS, FUEL_ID, FUEL_PARAM, FUEL_TYPE, I_HI, I_LO, POLY, ProverChoice, SNAPSHOT_CALL,
-    SNAPSHOT_LOOP, SNAPSHOT_PRE, STRSLICE_GET_CHAR, STRSLICE_IS_ASCII, STRSLICE_LEN,
-    STRSLICE_NEW_STRLIT, SUCC, SUFFIX_SNAP_JOIN, SUFFIX_SNAP_MUT, SUFFIX_SNAP_WHILE_BEGIN,
-    SUFFIX_SNAP_WHILE_END, SnapPos, SpanKind, Spanned, U_HI, encode_dt_as_path, fun_to_string,
-    is_variant_ident, new_internal_qid, new_user_qid_name, path_to_string, prefix_box,
-    prefix_ensures, prefix_fuel_id, prefix_no_unwind_when, prefix_open_inv, prefix_pre_var,
-    prefix_requires, prefix_spec_fn_type, prefix_unbox, snapshot_ident, static_name,
-    suffix_global_id, suffix_local_unique_id, suffix_typ_param_ids, variant_field_ident,
-    variant_field_ident_internal, variant_ident,
+    SNAPSHOT_LOOP, SNAPSHOT_PRE, STRSLICE_GET_CHAR, STRSLICE_LEN, STRSLICE_NEW_STRLIT, SUCC,
+    SUFFIX_SNAP_JOIN, SUFFIX_SNAP_MUT, SUFFIX_SNAP_WHILE_BEGIN, SUFFIX_SNAP_WHILE_END, SnapPos,
+    SpanKind, Spanned, U_HI, encode_dt_as_path, fun_to_string, is_variant_ident, new_internal_qid,
+    new_user_qid_name, path_to_string, prefix_box, prefix_ensures, prefix_fuel_id,
+    prefix_no_unwind_when, prefix_open_inv, prefix_pre_var, prefix_requires, prefix_spec_fn_type,
+    prefix_unbox, snapshot_ident, static_name, suffix_global_id, suffix_local_unique_id,
+    suffix_typ_param_ids, variant_field_ident, variant_field_ident_internal, variant_ident,
 };
 use crate::messages::{Span, error, error_with_label};
 use crate::poly::{MonoTyp, MonoTypX, MonoTyps, typ_as_mono, typ_is_poly};
@@ -53,7 +52,7 @@ pub struct PostConditionInfo {
     pub dest: Option<VarIdent>,
     /// Post-conditions (only used in non-recommends-checking mode)
     /// Each entry carries the span, the AIR expression, and an optional `proof_note` label.
-    pub ens_exprs: Vec<(Span, Expr, Option<Arc<String>>)>,
+    pub ens_exprs: Vec<(Span, Expr, Option<ProofNoteLabel>)>,
     /// Recommends checks (only used in recommends-checking mode)
     pub ens_spec_precondition_stms: Stms,
     /// Extra info about PostCondition for error reporting
@@ -1020,10 +1019,6 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
                 str_ident(STRSLICE_LEN),
                 Arc::new(vec![exp_to_expr(ctx, e, expr_ctxt)?]),
             )),
-            UnaryOp::StrIsAscii => Arc::new(ExprX::Apply(
-                str_ident(STRSLICE_IS_ASCII),
-                Arc::new(vec![exp_to_expr(ctx, e, expr_ctxt)?]),
-            )),
             UnaryOp::Not => mk_not(&exp_to_expr(ctx, e, expr_ctxt)?),
             UnaryOp::BitNot(width_opt) => {
                 let expr = exp_to_expr(ctx, e, expr_ctxt)?;
@@ -1058,7 +1053,6 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
                 };
                 apply_range_fun(&f_name, &range, vec![expr])
             }
-            UnaryOp::FloatToBits => exp_to_expr(ctx, e, expr_ctxt)?,
             UnaryOp::IntToReal => {
                 let expr = exp_to_expr(ctx, e, expr_ctxt)?;
                 Arc::new(ExprX::Unary(air::ast::UnaryOp::ToReal, expr))
@@ -1066,6 +1060,39 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
             UnaryOp::RealToInt => {
                 let expr = exp_to_expr(ctx, e, expr_ctxt)?;
                 Arc::new(ExprX::Unary(air::ast::UnaryOp::RealToInt, expr))
+            }
+            UnaryOp::FloatToBits => exp_to_expr(ctx, e, expr_ctxt)?,
+            UnaryOp::IeeeFloat(crate::ast::IeeeFloatUnaryOp::Cast) => {
+                let t_from = undecorate_typ(&e.typ);
+                let t_to = undecorate_typ(&exp.typ);
+                let args = vec![
+                    typ_to_id(ctx, &t_from),
+                    typ_to_id(ctx, &t_to),
+                    exp_to_expr(ctx, e, expr_ctxt)?,
+                ];
+                let fname = crate::def::IEEE_FLOAT_CAST;
+                Arc::new(ExprX::Apply(Arc::new(fname.to_string()), Arc::new(args)))
+            }
+            UnaryOp::IeeeFloat(fop) => {
+                use crate::ast::IeeeFloatUnaryOp;
+                let expr = exp_to_expr(ctx, e, expr_ctxt)?;
+                let fname = match fop {
+                    IeeeFloatUnaryOp::Cast => unreachable!(),
+                    IeeeFloatUnaryOp::Neg => crate::def::IEEE_FLOAT_NEG,
+                    IeeeFloatUnaryOp::Floor => crate::def::IEEE_FLOAT_FLOOR,
+                    IeeeFloatUnaryOp::Ceil => crate::def::IEEE_FLOAT_CEIL,
+                    IeeeFloatUnaryOp::Round => crate::def::IEEE_FLOAT_ROUND,
+                    IeeeFloatUnaryOp::RoundTiesEven => crate::def::IEEE_FLOAT_ROUND_TIES_EVEN,
+                    IeeeFloatUnaryOp::Trunc => crate::def::IEEE_FLOAT_TRUNC,
+                    IeeeFloatUnaryOp::IsNormal => crate::def::IEEE_FLOAT_IS_NORMAL,
+                    IeeeFloatUnaryOp::IsSubnormal => crate::def::IEEE_FLOAT_IS_SUBNORMAL,
+                    IeeeFloatUnaryOp::IsZero => crate::def::IEEE_FLOAT_IS_ZERO,
+                    IeeeFloatUnaryOp::IsInfinite => crate::def::IEEE_FLOAT_IS_INFINITE,
+                    IeeeFloatUnaryOp::IsNaN => crate::def::IEEE_FLOAT_IS_NAN,
+                    IeeeFloatUnaryOp::IsNegative => crate::def::IEEE_FLOAT_IS_NEGATIVE,
+                    IeeeFloatUnaryOp::IsPositive => crate::def::IEEE_FLOAT_IS_POSITIVE,
+                };
+                Arc::new(ExprX::Apply(Arc::new(fname.to_string()), Arc::new(vec![expr])))
             }
             UnaryOp::CoerceMode { .. } => {
                 panic!("internal error: CoerceMode should have been removed before here")
@@ -1374,6 +1401,21 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
 
                     return clip_bitwise_result(bit_expr, exp);
                 }
+                BinaryOp::IeeeFloat(fop) => {
+                    use crate::ast::IeeeFloatBinaryOp;
+                    let fname = match fop {
+                        IeeeFloatBinaryOp::Add => crate::def::IEEE_FLOAT_ADD,
+                        IeeeFloatBinaryOp::Sub => crate::def::IEEE_FLOAT_SUB,
+                        IeeeFloatBinaryOp::Mul => crate::def::IEEE_FLOAT_MUL,
+                        IeeeFloatBinaryOp::Div => crate::def::IEEE_FLOAT_DIV,
+                        IeeeFloatBinaryOp::Eq => crate::def::IEEE_FLOAT_EQ,
+                        IeeeFloatBinaryOp::InEq(InequalityOp::Le) => crate::def::IEEE_FLOAT_LE,
+                        IeeeFloatBinaryOp::InEq(InequalityOp::Ge) => crate::def::IEEE_FLOAT_GE,
+                        IeeeFloatBinaryOp::InEq(InequalityOp::Lt) => crate::def::IEEE_FLOAT_LT,
+                        IeeeFloatBinaryOp::InEq(InequalityOp::Gt) => crate::def::IEEE_FLOAT_GT,
+                    };
+                    ExprX::Apply(Arc::new(fname.to_string()), Arc::new(vec![lh, rh]))
+                }
                 _ => {
                     let aop = match op {
                         BinaryOp::And => unreachable!(),
@@ -1398,6 +1440,7 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
                         }
                         BinaryOp::RealArith(..) => unreachable!(),
                         BinaryOp::Bitwise(..) => unreachable!(),
+                        BinaryOp::IeeeFloat(_) => unreachable!(),
                         BinaryOp::StrGetChar => unreachable!(),
                         BinaryOp::Index(..) => unreachable!(),
                     };
@@ -2138,7 +2181,8 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                 ),
             };
             if let Some(label) = sst_exp_get_proof_note(expr) {
-                error = error.proof_note_label(&stm.span, label.to_string());
+                error =
+                    error.proof_note_label(&stm.span, label.text.to_string(), label.is_custom_err);
             }
             if ctx.debug {
                 state.map_span(&stm, SpanKind::Full);
@@ -2210,7 +2254,11 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
                                 let new_error = base_error
                                     .primary_label(&span, crate::def::THIS_POST_FAILED.to_string());
                                 if let Some(label) = proof_note {
-                                    new_error.proof_note_label(span, label.to_string())
+                                    new_error.proof_note_label(
+                                        span,
+                                        label.text.to_string(),
+                                        label.is_custom_err,
+                                    )
                                 } else {
                                     new_error
                                 }
@@ -2895,11 +2943,7 @@ fn stm_to_stmts(ctx: &Ctx, state: &mut State, stm: &Stm) -> Result<Vec<Stmt>, Vi
         }
         StmX::RevealString(lit) => {
             let exprs = Arc::new({
-                vec![
-                    string_is_ascii_to_air(ctx, lit.clone()),
-                    string_len_to_air(ctx, lit.clone()),
-                    string_indices_to_air(ctx, lit.clone()),
-                ]
+                vec![string_len_to_air(ctx, lit.clone()), string_indices_to_air(ctx, lit.clone())]
             });
             let exprx = Arc::new(ExprX::Multi(MultiOp::And, exprs));
             let stmt = Arc::new(StmtX::Assume(exprx));
@@ -2964,14 +3008,6 @@ fn string_indices_to_air(ctx: &Ctx, lit: Arc<String>) -> Expr {
     let exprs = Arc::new(exprs);
     let exprx = Arc::new(ExprX::Multi(MultiOp::And, exprs));
     exprx
-}
-
-fn string_is_ascii_to_air(ctx: &Ctx, lit: Arc<String>) -> Expr {
-    let is_ascii = lit.is_ascii();
-    let cnst = str_to_const_str(ctx, lit);
-    let lhs = str_apply(&str_ident(STRSLICE_IS_ASCII), &vec![cnst]);
-    let is_ascii = Arc::new(ExprX::Const(Constant::Bool(is_ascii)));
-    Arc::new(ExprX::Binary(air::ast::BinaryOp::Eq, lhs, is_ascii))
 }
 
 fn set_fuel(ctx: &Ctx, local: &mut Vec<Decl>, hidden: &Vec<Fun>) {
@@ -3092,7 +3128,7 @@ pub(crate) fn body_stm_to_air(
 
     let initial_sid = Arc::new("0_entry".to_string());
 
-    let mut ens_exprs: Vec<(Span, Expr, Option<Arc<String>>)> = Vec::new();
+    let mut ens_exprs: Vec<(Span, Expr, Option<ProofNoteLabel>)> = Vec::new();
     for ens in post_condition.ens_exps.iter() {
         let expr_ctxt = &ExprCtxt::new_mode(ExprMode::Body);
         let note = sst_exp_get_proof_note(ens);

@@ -261,7 +261,11 @@ pub(crate) enum Attr {
     // specify list of places where == is promoted to =~=
     AutoExtEqual(vir::ast::AutoExtEqual),
     /// Label for a proof obligation, i.e. the attribute `#[verifier::proof_note("label")]`
-    ProofNote(Span, String),
+    ProofNote {
+        span: Span,
+        text: String,
+        is_custom_err: bool,
+    },
     // add manual trigger to expression inside quantifier
     Trigger(Option<Vec<u64>>),
     // custom error string to report for precondition failures
@@ -354,6 +358,8 @@ pub(crate) enum Attr {
     StructuralConstWrapper,
     IgnoreOutsideNewMutRefExperiment,
     MigratePostconditionsWithMutRefs(bool),
+    TrackedSwap,
+    TrackedTakeOption,
 }
 
 fn get_trigger_arg(span: Span, attr_tree: &AttrTree) -> Result<u64, VirErr> {
@@ -413,7 +419,19 @@ pub(crate) fn parse_attrs(
                 AttrTree::Fun(_, name, None) if name == "exec" => v.push(Attr::Mode(Mode::Exec)),
                 AttrTree::Fun(span, name, attrs) if name == "proof_note" => {
                     let label = get_proof_note_label(*span, attrs)?;
-                    v.push(Attr::ProofNote(*span, label.clone()))
+                    v.push(Attr::ProofNote {
+                        span: *span,
+                        text: label.clone(),
+                        is_custom_err: false,
+                    })
+                }
+                AttrTree::Fun(span, name, attrs) if name == "proof_note_custom_err" => {
+                    let label = get_proof_note_label(*span, attrs)?;
+                    v.push(Attr::ProofNote {
+                        span: *span,
+                        text: label.clone(),
+                        is_custom_err: true,
+                    })
                 }
                 AttrTree::Fun(_, name, None) if name == "trigger" => v.push(Attr::Trigger(None)),
                 AttrTree::Fun(span, name, Some(args)) if name == "trigger" => {
@@ -674,6 +692,12 @@ pub(crate) fn parse_attrs(
                 }
                 AttrTree::Fun(_, arg, None) if arg == "exec_allows_no_decreases_clause" => {
                     v.push(Attr::ExecAllowNoDecreasesClause);
+                }
+                AttrTree::Fun(_, arg, None) if arg == "tracked_swap_primitive" => {
+                    v.push(Attr::TrackedSwap)
+                }
+                AttrTree::Fun(_, arg, None) if arg == "tracked_take_option_primitive" => {
+                    v.push(Attr::TrackedTakeOption)
                 }
                 _ => return err_span(span, "unrecognized verifier attribute"),
             },
@@ -1017,14 +1041,16 @@ pub(crate) fn has_auto_decreases_attr(attrs: &[Attribute]) -> bool {
     false
 }
 
-pub(crate) fn get_proof_note_annotation(attrs: &[Attribute]) -> Result<Option<String>, VirErr> {
+pub(crate) fn get_proof_note_annotation(
+    attrs: &[Attribute],
+) -> Result<Option<(String, bool)>, VirErr> {
     let mut label = None;
     for attr in parse_attrs(attrs, None)? {
-        if let Attr::ProofNote(span, text) = attr {
+        if let Attr::ProofNote { span, text, is_custom_err } = attr {
             if label.is_some() {
                 return err_span(span, "at most one `proof_note` attribute is allowed");
             }
-            label = Some(text);
+            label = Some((text, is_custom_err));
         }
     }
     Ok(label)
@@ -1120,6 +1146,8 @@ pub(crate) struct VerifierAttrs {
     pub(crate) encoded_static: bool,
     pub(crate) structural_const_wrapper: bool,
     pub(crate) ignore_outside_new_mut_ref_experiment: bool,
+    pub(crate) tracked_swap: bool,
+    pub(crate) tracked_take_option: bool,
 }
 
 // Check for the `get_field_many_variants` attribute
@@ -1293,6 +1321,8 @@ pub(crate) fn get_verifier_attrs_maybe_check(
         encoded_static: false,
         structural_const_wrapper: false,
         ignore_outside_new_mut_ref_experiment: false,
+        tracked_swap: false,
+        tracked_take_option: false,
     };
     let mut unsupported_rustc_attr: Option<(String, Span)> = None;
     for attr in parse_attrs(attrs, diagnostics)? {
@@ -1375,6 +1405,8 @@ pub(crate) fn get_verifier_attrs_maybe_check(
             Attr::IgnoreOutsideNewMutRefExperiment => {
                 vs.ignore_outside_new_mut_ref_experiment = true
             }
+            Attr::TrackedSwap => vs.tracked_swap = true,
+            Attr::TrackedTakeOption => vs.tracked_take_option = true,
             _ => {}
         }
     }

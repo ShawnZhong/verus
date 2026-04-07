@@ -3057,6 +3057,7 @@ impl Clone for crate::WithSpecOnExpr {
             inputs: self.inputs.clone(),
             outputs: self.outputs.clone(),
             follows: self.follows.clone(),
+            erased_fields: self.erased_fields.clone(),
         }
     }
 }

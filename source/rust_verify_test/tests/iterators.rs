@@ -53,7 +53,6 @@ test_verify_one_file! {
 
 
         /* map iterator */
-
         pub ghost struct MapIteratorPred<Iter, F> {
             iter: Iter,
             f: F,
@@ -70,6 +69,7 @@ test_verify_one_file! {
             }
         }
 
+        #[verifier::reject_recursive_types(Item)]
         pub struct MapIterator<Item, Iter, F>
             where
                 Iter: Iterator,
