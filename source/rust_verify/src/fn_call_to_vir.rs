@@ -2145,6 +2145,17 @@ fn verus_item_to_vir<'tcx, 'a>(
             };
             mk_expr(ExprX::Unary(op, exp))
         }
+        VerusItem::MutRefUpdateCurrent => {
+            if !bctx.new_mut_ref {
+                unsupported_err!(expr.span, "mut_ref spec funs without '-V new-mut-ref'", &args);
+            }
+            record_spec_fn(bctx, expr);
+            if !bctx.in_ghost {
+                return err_span(expr.span, format!("`mut_ref_update_current` must be in a 'proof' block"));
+            }
+            let exp = expr_to_vir_consume(bctx, &args[0], ExprModifier::REGULAR)?;
+            mk_expr(ExprX::Binary(BinaryOp::MutRefUpdateCurrent, exp))
+        }
         VerusItem::AfterBorrow => {
             if !bctx.new_mut_ref {
                 unsupported_err!(expr.span, "mut_ref spec funs without '-V new-mut-ref'", &args);

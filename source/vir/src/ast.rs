@@ -709,6 +709,7 @@ pub enum BinaryOp {
     /// `verus_builtin::array_index` lowers to this.
     /// In SST, this can also be used as a Loc.
     Index(ArrayKind, BoundsCheck),
+    MutRefUpdateCurrent,
 }
 
 /// More complex binary operations (requires Clone rather than Copy)

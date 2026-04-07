@@ -2374,6 +2374,13 @@ pub fn mut_ref_future<T>(_mut_ref: &mut T) -> T {
 }
 
 #[cfg(verus_keep_ghost)]
+#[rustc_diagnostic_item = "verus::verus_builtin::mut_ref_update_current"]
+#[verifier::spec]
+pub fn mut_ref_update_current<'a, 'b, T: ?Sized>(_mut_ref: &'a mut T, _upd: &'b T) -> &'a mut T {
+    unimplemented!()
+}
+
+#[cfg(verus_keep_ghost)]
 #[rustc_diagnostic_item = "verus::verus_builtin::final_"]
 #[verifier::spec]
 pub fn final_<T: ?Sized>(_mut_ref: &mut T) -> &mut T {

@@ -471,6 +471,7 @@ fn gather_terms(ctxt: &mut Ctxt, ctx: &Ctx, exp: &Exp, depth: u64) -> (bool, Ter
                 Bitwise(..) => 1,
                 StrGetChar => fail_on_strop(),
                 Index(..) => 1,
+                MutRefUpdateCurrent => 1,
             };
             let (is_pure1, term1) = gather_terms(ctxt, ctx, e1, depth);
             let (is_pure2, term2) = gather_terms(ctxt, ctx, e2, depth);

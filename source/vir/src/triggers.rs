@@ -333,6 +333,11 @@ fn check_trigger_expr(
                         check_trigger_expr_arg(state, arg2);
                         Ok(())
                     }
+                    MutRefUpdateCurrent => {
+                        check_trigger_expr_arg(state, arg1);
+                        check_trigger_expr_arg(state, arg2);
+                        Ok(())
+                    }
                 }
             }
             ExpX::BinaryOpr(crate::ast::BinaryOpr::ExtEq(_, _typ), arg1, arg2) => {

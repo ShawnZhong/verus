@@ -1467,7 +1467,8 @@ impl BinaryOp {
             | BinaryOp::Bitwise(..)
             | BinaryOp::IeeeFloat(_)
             | BinaryOp::StrGetChar
-            | BinaryOp::Index(..) => false,
+            | BinaryOp::Index(..)
+            | BinaryOp::MutRefUpdateCurrent => false,
         }
     }
 }

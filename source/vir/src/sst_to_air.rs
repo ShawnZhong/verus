@@ -1411,6 +1411,11 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
                     };
                     ExprX::Apply(Arc::new(fname.to_string()), Arc::new(vec![lh, rh]))
                 }
+                BinaryOp::MutRefUpdateCurrent => {
+                    let ident = Arc::new(crate::def::MUT_REF_UPDATE_CURRENT.to_string());
+                    let exprs = vec![lh, rh];
+                    ExprX::Apply(ident, Arc::new(exprs))
+                }
                 _ => {
                     let aop = match op {
                         BinaryOp::And => unreachable!(),
@@ -1438,6 +1443,7 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
                         BinaryOp::IeeeFloat(_) => unreachable!(),
                         BinaryOp::StrGetChar => unreachable!(),
                         BinaryOp::Index(..) => unreachable!(),
+                        BinaryOp::MutRefUpdateCurrent => unreachable!(),
                     };
                     ExprX::Binary(aop, lh, rh)
                 }

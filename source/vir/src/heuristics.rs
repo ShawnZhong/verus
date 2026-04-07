@@ -106,7 +106,8 @@ fn insert_auto_ext_equal(ctx: &Ctx, exp: &Exp) -> Exp {
             | BinaryOp::Bitwise(..)
             | BinaryOp::IeeeFloat(_)
             | BinaryOp::StrGetChar
-            | BinaryOp::Index(..) => exp.clone(),
+            | BinaryOp::Index(..)
+            | BinaryOp::MutRefUpdateCurrent => exp.clone(),
         },
         ExpX::BinaryOpr(BinaryOpr::ExtEq(..), _, _) => exp.clone(),
         ExpX::If(e1, e2, e3) => {

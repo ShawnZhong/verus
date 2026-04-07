@@ -1627,7 +1627,9 @@ fn eval_expr_internal(ctx: &Ctx, state: &mut State, exp: &Exp) -> Result<Exp, Vi
                 | HeightCompare { .. }
                 | StrGetChar
                 | RealArith(..)
-                | IeeeFloat(_) => ok_e2(eval_expr_internal(ctx, state, e2)?),
+                | IeeeFloat(_)
+                | MutRefUpdateCurrent
+                => ok_e2(eval_expr_internal(ctx, state, e2)?),
             }
         }
         BinaryOpr(op, e1, e2) => {

@@ -678,6 +678,7 @@ fn visit_exp(ctx: &Ctx, state: &mut State, exp: &Exp) -> Exp {
                 BinaryOp::IeeeFloat(..) => (true, false),
                 BinaryOp::StrGetChar { .. } => (true, false),
                 BinaryOp::Index(..) => unreachable!("Index"),
+                BinaryOp::MutRefUpdateCurrent => (false, true),
             };
             if native {
                 let e1 = coerce_exp_to_native(ctx, &e1);
