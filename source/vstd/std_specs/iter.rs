@@ -356,7 +356,6 @@ pub trait ExIterStep: Clone + PartialOrd + Sized {
  * Collect our broadcast definitions
  ********************************************************************************/
 
-// REVIEW: Can we automatically pull these in?
 pub broadcast group group_iter_axioms {
     rev_postcondition,
 }

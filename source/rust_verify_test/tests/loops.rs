@@ -1648,7 +1648,6 @@ test_verify_one_file! {
 test_verify_one_file! {
     #[test] rev_iter verus_code! {
         use vstd::prelude::*;
-        broadcast use vstd::std_specs::iter::group_iter_axioms;
         fn test() {
             let v: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
             let mut w: Vec<u8> = vec![];
@@ -1768,7 +1767,6 @@ test_verify_one_file! {
       use vstd::prelude::*;
       use vstd::std_specs::vecdeque::*;
       use std::collections::VecDeque;
-      broadcast use vstd::std_specs::iter::group_iter_axioms;
 
       fn test() {
           let mut vd = VecDeque::<u32>::new();
