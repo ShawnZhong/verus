@@ -1229,6 +1229,11 @@ pub(crate) fn exp_to_expr(ctx: &Ctx, exp: &Exp, expr_ctxt: &ExprCtxt) -> Result<
                 // A `proof_note` label is metadata and has no effect otherwise.
                 return exp_to_expr(ctx, e, expr_ctxt);
             }
+            UnaryOpr::AutoDecreases => {
+                // AutoDecreases is just a marker for filtering invariants
+                // during loop construction. Unwrap and process the inner expression.
+                return exp_to_expr(ctx, e, expr_ctxt);
+            }
             UnaryOpr::HasResolved(t) => {
                 let mut exprs: Vec<Expr> = typ_to_ids(t);
                 exprs.push(exp_to_expr(ctx, e, expr_ctxt)?);
