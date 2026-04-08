@@ -279,10 +279,6 @@ test_verify_one_file_with_options! {
             assert(increasing_seq(g_keys));
             assert(g_keys.no_duplicates());
 
-            // REVIEW: Needed because vstd lacks OrdSpec impl for &T
-            assume(obeys_cmp_spec::<&u32>());
-            assume(forall|a: &u32, b: &u32| (#[trigger] <&u32 as vstd::std_specs::cmp::OrdSpec>::cmp_spec(&a, &b)) == <u32 as vstd::std_specs::cmp::OrdSpec>::cmp_spec(a, b));
-
             assert(g_keys == seq![&3u32, &6u32]) by {
                 assert(obeys_cmp_spec::<u32>());
                 assert forall|i, j| 0 <= i < j < g_keys.len() implies *g_keys[i] < *g_keys[j] by {

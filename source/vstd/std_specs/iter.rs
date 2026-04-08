@@ -157,14 +157,13 @@ pub broadcast axiom fn rev_postcondition<I: DoubleEndedIteratorSpec>(i: I)
         i.obeys_prophetic_iter_laws(),
         i.initial_value_inv(&i),
     ensures
-        // TODO: Remove parens after we merge in main
-        ({
+        {
             let r = #[trigger] into_rev_spec(i);
             &&& IteratorSpec::remaining(&r) == IteratorSpec::remaining(&i).reverse()
             &&& IteratorSpec::completes(&r) == i.completes()
             &&& IteratorSpec::decrease(&r) is Some == i.decrease() is Some
             &&& IteratorSpec::initial_value_inv(&r, &r)
-        }),
+        },
 ;
 
 impl <I> IteratorSpecImpl for Rev<I>
