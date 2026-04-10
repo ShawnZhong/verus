@@ -86,12 +86,9 @@ pub trait ExIterator {
     //#[verifier::when_used_as_spec(into_rev_spec)]
     fn rev(self) -> (r: Rev<Self>)
         where Self: Sized,
-        requires
-            self.obeys_prophetic_iter_laws(),   // REVIEW: Should this be moved to an implication on the ensures clauses?
-            self.initial_value_inv(&self),
         default_ensures
-            r == into_rev_spec(self),
-            rev_post(self, r),
+            self.obeys_prophetic_iter_laws() && self.initial_value_inv(&self) ==>
+                r == into_rev_spec(self) && rev_post(self, r),
     ;
 
 }
@@ -156,6 +153,7 @@ pub broadcast axiom fn rev_postcondition<I: DoubleEndedIteratorSpec>(i: I)
     requires
         i.obeys_prophetic_iter_laws(),
         i.initial_value_inv(&i),
+        rev_post(i, into_rev_spec(i)),
     ensures
         {
             let r = #[trigger] into_rev_spec(i);
