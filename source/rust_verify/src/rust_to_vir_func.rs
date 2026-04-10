@@ -28,9 +28,8 @@ use rustc_span::symbol::Ident;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use vir::ast::{
-    BodyVisibility, Fun, FunX, FunctionAttrsX, FunctionKind, FunctionX, GenericBoundX, ItemKind,
-    KrateX, Mode, OpaqueTypes, Opaqueness, ParamX, Path, Typ, TypDecoration, TypX, VarIdent,
-    VirErr, Visibility,
+    BodyVisibility, Fun, FunX, FunctionAttrsX, FunctionKind, FunctionX, ItemKind, KrateX, Mode,
+    OpaqueTypes, Opaqueness, ParamX, Path, Typ, TypDecoration, TypX, VarIdent, VirErr, Visibility,
 };
 use vir::ast_util::{air_unique_var, unit_typ};
 use vir::def::{RETURN_VALUE, VERUS_SPEC};
@@ -260,6 +259,8 @@ fn handle_autospec<'tcx>(
                     exec_assume_termination: false,
                     exec_allows_no_decreases_clause: false,
                     ignore_outside_new_mut_ref: functionx.attrs.ignore_outside_new_mut_ref,
+                    tracked_swap: false,
+                    tracked_take_option: false,
                 }),
                 body: Some(ret_clause.clone()),
                 extra_dependencies: functionx.extra_dependencies.clone(),
@@ -1319,6 +1320,8 @@ fn make_attributes<'tcx>(
             vattrs.exec_allows_no_decreases_clause
         },
         ignore_outside_new_mut_ref,
+        tracked_swap: vattrs.tracked_swap,
+        tracked_take_option: vattrs.tracked_take_option,
     };
     Ok(Arc::new(fattrs))
 }
@@ -2117,35 +2120,7 @@ fn fix_external_fn_specification_trait_method_decl_typs(
             typ_params[0].clone(),
             Arc::new(TypX::TypParam(vir::def::trait_self_type_param())),
         );
-        typ_bounds = Arc::new(
-            typ_bounds
-                .iter()
-                .map(|typ_bound| {
-                    let gbx = match &**typ_bound {
-                        GenericBoundX::Trait(path, typs) => {
-                            let typs = typs.iter().map(|typ| subst_typ(&typ_substs, typ)).collect();
-                            GenericBoundX::Trait(path.clone(), Arc::new(typs))
-                        }
-                        GenericBoundX::TypEquality(path, typs, name, typ) => {
-                            let typs = typs.iter().map(|typ| subst_typ(&typ_substs, typ)).collect();
-                            let typ = subst_typ(&typ_substs, typ);
-                            GenericBoundX::TypEquality(
-                                path.clone(),
-                                Arc::new(typs),
-                                name.clone(),
-                                typ,
-                            )
-                        }
-                        GenericBoundX::ConstTyp(t1, t2) => {
-                            let t1 = subst_typ(&typ_substs, t1);
-                            let t2 = subst_typ(&typ_substs, t2);
-                            GenericBoundX::ConstTyp(t1, t2)
-                        }
-                    };
-                    Arc::new(gbx)
-                })
-                .collect(),
-        );
+        typ_bounds = vir::sst_util::subst_typ_in_bounds(&typ_substs, &typ_bounds);
 
         let mut typ_params = (*typ_params).clone();
         typ_params[0] = vir::def::trait_self_type_param();

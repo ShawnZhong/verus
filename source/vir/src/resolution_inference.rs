@@ -1151,7 +1151,7 @@ impl<'a> Builder<'a> {
                 // these nodes.
                 panic!("Verus Internal Error: unhandled TwoPhaseBorrowMut node");
             }
-            ExprX::BorrowMut(p) => {
+            ExprX::BorrowMut(p) | ExprX::BorrowMutTracked(p) => {
                 let (p, bb) = self.build_place_and_intern(p, bb, TypInv::Yes)?;
                 if let Some(p) = p.get_place_for_mutation() {
                     self.push_instruction_propagate(
@@ -1573,7 +1573,9 @@ impl<'a> Builder<'a> {
         };
         let (cpt, bb) = self.build_place_typed(place, bb, tinv)?;
 
-        assert!(arms.len() != 0);
+        if arms.len() == 0 {
+            return Err(());
+        }
 
         let mut cur_bb = bb;
         let mut arm_bb_ends = vec![];
