@@ -1638,6 +1638,21 @@ pub(crate) fn check_item_fn<'tcx>(
         // is_mut: means a parameter is like `x: &mut X` or `x: Tracked<&mut X>`
         let is_mut = is_ref_mut.is_some();
 
+        if matches!(&*typ, TypX::MutRef(_)) {
+            if vattrs.allow_in_spec {
+                return err_span(
+                    span,
+                    format!("allow_in_spec not supported for function with &mut param"),
+                );
+            }
+            if vattrs.autospec.is_some() {
+                return err_span(
+                    span,
+                    format!("when_used_as_spec not supported for function with &mut param"),
+                );
+            }
+        }
+
         let vir_param = ctxt.spanned_new(
             span,
             ParamX {
@@ -1649,8 +1664,6 @@ pub(crate) fn check_item_fn<'tcx>(
                 user_mut: is_mut_var || is_mut,
             },
         );
-
-        // TODO(new_mut_ref): should probably error for mutable references in the dual exec/spec cases
 
         if is_mut_var {
             if mode == Mode::Spec {
@@ -2652,8 +2665,13 @@ pub(crate) fn check_item_const_or_static<'tcx>(
     if header.require.len() + header.recommend.len() > 0 {
         return err_span(span, "consts cannot have requires/recommends");
     }
-    if ret_mode == Mode::Spec && (header.ensure.0.len() > 0 || header.ensure.1.len() > 0) {
-        return err_span(span, "spec consts cannot have ensures");
+
+    let spec_or_dual = ret_mode == Mode::Spec || func_mode == Mode::Spec;
+    if spec_or_dual && (header.ensure.0.len() > 0 || header.ensure.1.len() > 0) {
+        return err_span(span, "const cannot have `ensures` unless it is `exec const`");
+    }
+    if spec_or_dual && header.returns.is_some() {
+        return err_span(span, "const cannot have `returns` unless it is `exec const`");
     }
 
     let ret_name = air_unique_var(RETURN_VALUE);
