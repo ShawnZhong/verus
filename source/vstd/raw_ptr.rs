@@ -1419,6 +1419,26 @@ impl<T> SeqPointsTo<T> {
     }
 }
 
+impl SeqPointsTo<u8> {
+    /// We can cast a `SeqPointsTo<u8>` to a `SeqPointsTo<T>` under the following conditions:
+    ///
+    /// (1) The pointer's address is aligned to `T`.
+    ///
+    /// (2) The length is divisible by `layout::size_of::<T>()`.
+    ///
+    /// (3) The permission is uninitialized.
+    pub axiom fn cast_to_T<T>(tracked self) -> (tracked out: SeqPointsTo<T>)
+        requires
+            self.ptr()@.addr as nat % align_of::<T>() == 0,
+            self.len() % layout::size_of::<T>() == 0,
+            self.is_fully_uninit(),
+        ensures
+            out.ptr() == self.ptr() as *mut T,
+            out.len() == self.len() / layout::size_of::<T>(),
+            out.is_fully_uninit(),
+    ;
+}
+
 pub tracked struct MapPointsTo<T> {
     points_to: Map<nat, PointsTo<T>>,
     ptr: Ghost<*mut T>,
@@ -2365,7 +2385,7 @@ impl PointsToRaw {
             0 <= i < out.len() ==> pt_slice.mem_contents_seq()[i as int].is_init()
                 ==> out[i].is_init());
         out
-    }// /
+    }  // /
     // Given that `start` is aligned to `V` and
     // /// that the domain of the `PointsToRaw` permission matches `length * size_of::<V>()`,
     // /// creates a `MapPointsTo<V>` permission from a `PointsToRaw` permission
