@@ -10,8 +10,8 @@ use crate::ast::{BuiltinSpecFun, Exprs};
 use crate::ast_util::{QUANT_FORALL, bool_typ, types_equal, undecorate_typ, unit_typ};
 use crate::context::Ctx;
 use crate::def::{Spanned, unique_local};
-use crate::inv_masks::{MaskQueryKind, MaskSet};
 use crate::fun;
+use crate::inv_masks::{MaskQueryKind, MaskSet};
 use crate::messages::{
     Message, Span, ToAny, error, error_with_label, error_with_secondary_label, internal_error,
     warning,

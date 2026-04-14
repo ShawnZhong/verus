@@ -664,7 +664,7 @@ impl Visitor {
             stream
                 .into_iter()
                 .map(|tt| match tt {
-                    TokenTree::Ident(curr) if curr.to_string() == "self" => {
+                    TokenTree::Ident(curr) if curr == "self" => {
                         let mut ident = ident.clone();
                         ident.set_span(curr.span());
                         TokenTree::Ident(ident)
@@ -912,7 +912,7 @@ impl Visitor {
         generics: Option<impl ToTokens>,
         inputs: (Option<impl ToTokens>, impl ToTokens), // optional self and args
         atomic_perm_clause: Option<(verus_syn::Ident, verus_syn::PermClause)>,
-        is_async_fn: bool,                              // is the function an async function
+        is_async_fn: bool, // is the function an async function
     ) -> Vec<Stmt> {
         let requires = self.take_ghost(&mut spec.requires);
         let recommends = self.take_ghost(&mut spec.recommends);

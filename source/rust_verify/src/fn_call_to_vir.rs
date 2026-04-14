@@ -2578,8 +2578,8 @@ fn extract_ensures<'tcx>(
             .map(|e| get_ensures_arg(bctx, e))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let regular = args.iter().filter_map(|(b, e)| (!b).then(|| e.clone())).collect();
-        let default = args.iter().filter_map(|(b, e)| (*b).then(|| e.clone())).collect();
+        let regular = args.iter().filter(|&(b, _)| !b).map(|(_, e)| e.clone()).collect();
+        let default = args.iter().filter(|&(b, _)| *b).map(|(_, e)| e.clone()).collect();
         Ok((Arc::new(regular), Arc::new(default)))
     };
     match &expr.kind {
