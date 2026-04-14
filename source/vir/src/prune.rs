@@ -617,6 +617,19 @@ fn traverse_reachable(ctxt: &Ctxt, state: &mut State) {
                 state.reached_types.iter().chain([ReachedType::None].iter()).map(|t| (t, &f)),
             );
             reach_methods(ctxt, state, methods);
+            if function.x.attrs.is_async {
+                reach_typ(
+                    ctxt,
+                    state,
+                    &function
+                        .x
+                        .async_ret
+                        .as_ref()
+                        .expect("Async function has no return type")
+                        .x
+                        .typ,
+                );
+            }
             continue;
         }
         if let Some(f) = state.worklist_reveal_groups.pop() {
@@ -1052,6 +1065,27 @@ pub fn prune_krate_for_module_or_krate(
             if is_root_function(f) {
                 // our function
                 reach(&mut state.reached_functions, &mut state.worklist_functions, &f.x.name);
+
+                // an async function, we need to include async related functions
+                if f.x.attrs.is_async {
+                    reach(
+                        &mut state.reached_functions,
+                        &mut state.worklist_functions,
+                        &crate::fun!("vstd" => "future", "FutureAdditionalSpecFns", "view"),
+                    );
+
+                    reach(
+                        &mut state.reached_functions,
+                        &mut state.worklist_functions,
+                        &crate::fun!("vstd" => "future", "FutureAdditionalSpecFns", "awaited"),
+                    );
+
+                    reach(
+                        &mut state.reached_functions,
+                        &mut state.worklist_functions,
+                        &crate::fun!("vstd" => "future", "exec_await"),
+                    );
+                }
             }
             continue;
         }

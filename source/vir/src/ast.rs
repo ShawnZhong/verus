@@ -1220,6 +1220,8 @@ pub enum ExprX {
     /// and well-formedness checks, but otherwise has no meaning. The `Old` node is
     /// ignored after these checks are complete.
     Old(Expr),
+    /// Async await
+    Await(Expr),
 }
 
 #[derive(Debug, Serialize, Deserialize, ToDebugSNode, Clone, Copy)]
@@ -1519,6 +1521,8 @@ pub struct FunctionAttrsX {
     pub tracked_swap: bool,
     /// Is this function `Option::tracked_take`, which requires special handling
     pub tracked_take_option: bool,
+    /// Whether the function is an async function
+    pub is_async: bool,
 }
 
 /// Function specification of its invariant mask
@@ -1668,6 +1672,8 @@ pub struct FunctionX {
     /// Extra dependencies, only used for for the purposes of recursion-well-foundedness
     /// Useful only for trusted fns.
     pub extra_dependencies: Vec<Fun>,
+    /// The return type of the async function i.e., impl Future<Output>.
+    pub async_ret: Option<Param>,
 }
 
 pub type RevealGroup = Arc<Spanned<RevealGroupX>>;

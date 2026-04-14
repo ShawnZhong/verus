@@ -2679,11 +2679,11 @@ dependencies = [
 
 [[package]]
 name = "verus_builtin"
-version = "0.0.0-2026-04-05-0114"
+version = "0.0.0-2026-04-12-0118"
 
 [[package]]
 name = "verus_builtin_macros"
-version = "0.0.0-2026-04-05-0114"
+version = "0.0.0-2026-04-12-0118"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -2697,7 +2697,7 @@ dependencies = [
 
 [[package]]
 name = "verus_prettyplease"
-version = "0.0.0-2026-04-05-0114"
+version = "0.0.0-2026-04-12-0118"
 dependencies = [
  "proc-macro2",
  "verus_syn",
