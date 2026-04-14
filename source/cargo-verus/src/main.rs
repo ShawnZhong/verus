@@ -15,7 +15,7 @@ use anyhow::Result;
 use cargo_verus::{execute_plan, plan_execution};
 
 fn main() -> Result<ExitCode> {
-    let plan = plan_execution(env::args())?;
+    let plan = plan_execution(env::args(), None)?;
     let exit_code = execute_plan(&plan)?;
     Ok(exit_code)
 }
