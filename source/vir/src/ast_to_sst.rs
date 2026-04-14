@@ -2838,9 +2838,6 @@ pub(crate) fn expr_to_stm_opt(
             //     Err(au)
             // }
             // ```
-            //
-            // Note: At this stage of compilation, there are no more `match` expressions,
-            // so we need to simulate them using `if` expressions, `is_variant` and `field`.
 
             let (mut stms, au_raw_exp) = expr_to_stm_opt(ctx, state, au_expr)?;
             let au_raw_val = unwrap_or_return_never!(au_raw_exp, stms);

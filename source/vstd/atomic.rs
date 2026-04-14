@@ -611,11 +611,11 @@ impl<T> PAtomicPtr<T> {
     );
 }
 
-// impl<X, Y, Pred> core::fmt::Debug for AtomicUpdate<X, Y, Pred> {
-//     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-//         f.debug_struct("AtomicUpdate").finish_non_exhaustive()
-//     }
-// }
+impl<X, Y, Pred> core::fmt::Debug for AtomicUpdate<X, Y, Pred> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AtomicUpdate").finish_non_exhaustive()
+    }
+}
 
 verus! {
 
@@ -813,74 +813,6 @@ pub fn try_open_atomic_update_end<X, Y: UpdateTry, P: UpdatePredicate<X, Y>>(
     unimplemented!()
 }
 
-// Helper function for wrapping/unwrapping tracked results
-// using in `open_atomic_update` and `peek_atomic_update`
-// #[doc(hidden)]
-// #[verifier::skip_inst_collector]
-// pub proof fn au_commit_wrap_proof<X, Y>(tracked y: Tracked<Y>) -> (res: Tracked<Result<Y, X>>)
-//     ensures
-//         res@ is Ok,
-//         res@->Ok_0 == y@,
-//     opens_invariants none
-// {
-//     Tracked(Ok(y.get()))
-// }
-// #[doc(hidden)]
-// #[verifier::skip_inst_collector]
-// pub exec fn au_commit_wrap_exec<X, Y>(y: Tracked<Y>) -> (res: Tracked<Result<Y, X>>)
-//     ensures
-//         res@ is Ok,
-//         res@->Ok_0 == y@,
-//     opens_invariants none
-// {
-//     Tracked(Ok(y.get()))
-// }
-// #[doc(hidden)]
-// #[verifier::skip_inst_collector]
-// pub proof fn au_abort_wrap_proof<X, Y>(tracked x: Tracked<X>) -> (res: Tracked<Result<Y, X>>)
-//     ensures
-//         res@ is Err,
-//         res@->Err_0 == x@,
-//     opens_invariants none
-// {
-//     Tracked(Err(x.get()))
-// }
-// #[doc(hidden)]
-// #[verifier::skip_inst_collector]
-// pub exec fn au_abort_wrap_exec<X, Y>(x: Tracked<X>) -> (res: Tracked<Result<Y, X>>)
-//     ensures
-//         res@ is Err,
-//         res@->Err_0 == x@,
-//     opens_invariants none
-// {
-//     Tracked(Err(x.get()))
-// }
-// #[doc(hidden)]
-// #[verifier::skip_inst_collector]
-// pub proof fn au_abort_unwrap_proof<X, Y, Z, Pred>(
-//     tracked err_au: Tracked<Result<(), AtomicUpdate<X, Y, Z, Pred>>>,
-// ) -> (au: Tracked<AtomicUpdate<X, Y, Z, Pred>>)
-//     requires
-//         err_au@ is Err,
-//     ensures
-//         err_au@->Err_0 == au@,
-//     opens_invariants none
-// {
-//     Tracked(err_au.get().tracked_unwrap_err())
-// }
-// #[doc(hidden)]
-// #[verifier::skip_inst_collector]
-// pub exec fn au_abort_unwrap_exec<X, Y, Z, Pred>(
-//     err_au: Tracked<Result<(), AtomicUpdate<X, Y, Z, Pred>>>,
-// ) -> (au: Tracked<AtomicUpdate<X, Y, Z, Pred>>)
-//     requires
-//         err_au@ is Err,
-//     ensures
-//         err_au@->Err_0 == au@,
-//     opens_invariants none
-// {
-//     Tracked(err_au.get().tracked_unwrap_err())
-// }
 // Macro definitions
 #[macro_export]
 macro_rules! open_atomic_update {

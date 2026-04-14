@@ -569,10 +569,7 @@ fn verus_item_to_vir<'tcx, 'a>(
                     record_spec_fn_pure_args_only(bctx, expr);
                     mk_expr(ExprX::Header(Arc::new(HeaderExprX::NoMethodBody)))
                 }
-                SpecItem::Requires
-                | SpecItem::Recommends
-                //| SpecItem::OpensInvariants
-                | SpecItem::Returns => {
+                SpecItem::Requires | SpecItem::Recommends | SpecItem::Returns => {
                     record_spec_fn_pure_args_only(bctx, expr);
                     unsupported_err_unless!(
                         args_len == 1,
@@ -951,18 +948,6 @@ fn verus_item_to_vir<'tcx, 'a>(
                         panic!("the closure should take exactly two argument")
                     };
 
-                    // let ExprKind::Block(Block { stmts: [_, let_spec_au, ..], .. }, None) = body.value.kind else {
-                    //     return malformed_err(expr);
-                    // };
-
-                    // let StmtKind::Let(rustc_hir::LetStmt { pat: spec_au_pat, .. }) = let_spec_au.kind else {
-                    //     return malformed_err(expr);
-                    // };
-
-                    // let spec_au_var = match spec_au_pat.kind {
-                    //     rustc_hir::PatKind::Wild => pat_to_var(ghost_au_param.pat)?,
-                    //     _ => pat_to_var(spec_au_pat)?,
-                    // };
                     let spec_au_var = pat_to_var(ghost_au_param.pat)?;
 
                     let Some(args) = &bctx.au_pred_args else {
@@ -2977,7 +2962,6 @@ fn mk_vir_args<'tcx>(
 ) -> Result<Vec<vir::ast::Expr>, VirErr> {
     let tcx = bctx.ctxt.tcx;
     let raw_inputs = bctx.ctxt.tcx.fn_sig(f).instantiate(tcx, node_substs).skip_binder().inputs();
-    //assert!(raw_inputs.len() == args.len());
     args.iter()
         .zip(raw_inputs)
         .map(|(arg, raw_param)| {
@@ -3007,7 +2991,7 @@ fn mk_vir_args_auto_skip_mut_refs<'tcx>(
 ) -> Result<Vec<vir::ast::Expr>, VirErr> {
     let tcx = bctx.ctxt.tcx;
     let raw_inputs = bctx.ctxt.tcx.fn_sig(f).instantiate(tcx, node_substs).skip_binder().inputs();
-    assert!(raw_inputs.len() == args.len());
+    assert_eq!(raw_inputs.len(), args.len());
     args.iter()
         .zip(raw_inputs)
         .map(|(arg, raw_param)| {

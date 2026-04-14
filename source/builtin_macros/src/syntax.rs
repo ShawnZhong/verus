@@ -92,7 +92,7 @@ pub(crate) struct Visitor {
     assign_to: bool,
     // Add extra verus signature information to the docstring
     pub(crate) rustdoc: bool,
-    // The currently `Self` type taken from the surrounding impl block
+    // The current `Self` type taken from the surrounding impl block
     inside_impl: Option<Box<(Generics, Box<Type>)>>,
     // A place to put items that are emitted while visiting
     additional_items: Vec<Item>,

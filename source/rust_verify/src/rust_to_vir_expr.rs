@@ -2878,14 +2878,9 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
             let ctor_opt = resolve_ctor(bctx.ctxt.tcx, res);
             match (res, ctor_opt) {
                 (Res::Local(id), _) => {
-                    // if let Some(actx) = bctx.atomically.as_deref()
-                    //     && actx.update_binder == id
-                    // {
-                    //     return err_span(expr.span, "update function must be called directly");
-                    // }
-
-                    let actx = bctx.atomically.as_deref();
-                    if actx.is_some_and(|actx| actx.update_binder == id) {
+                    if let Some(actx) = bctx.atomically.as_deref()
+                        && actx.update_binder == id
+                    {
                         return err_span(expr.span, "update function must be called directly");
                     }
 
