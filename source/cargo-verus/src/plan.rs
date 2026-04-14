@@ -23,8 +23,8 @@ pub fn execute_plan(plan: &ExecutionPlan) -> Result<ExitCode> {
 }
 
 pub fn plan_execution(
-    args: impl Iterator<Item = String>,
     current_dir: Option<PathBuf>,
+    args: impl Iterator<Item = String>,
 ) -> Result<ExecutionPlan> {
     let parsed_cli = CargoVerusCli::from_args(args)?;
 
