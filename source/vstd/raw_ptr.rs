@@ -1420,21 +1420,21 @@ impl<T> SeqPointsTo<T> {
 }
 
 impl SeqPointsTo<u8> {
-    /// We can cast a `SeqPointsTo<u8>` to a `SeqPointsTo<T>` under the following conditions:
+    /// We can cast a `SeqPointsTo<u8>` to a `SeqPointsTo<T>` of length `capacity` under the following conditions:
     ///
     /// (1) The pointer's address is aligned to `T`.
     ///
-    /// (2) The length is divisible by `layout::size_of::<T>()`.
+    /// (2) The length is at least `capacity * layout::size_of::<T>()`.
     ///
     /// (3) The permission is uninitialized.
-    pub axiom fn cast_to_T<T>(tracked self) -> (tracked out: SeqPointsTo<T>)
+    pub axiom fn cast_to_type<T>(tracked self, capacity: usize) -> (tracked out: SeqPointsTo<T>)
         requires
             self.ptr()@.addr as nat % align_of::<T>() == 0,
-            self.len() % layout::size_of::<T>() == 0,
+            self.len() >= capacity * layout::size_of::<T>(),
             self.is_fully_uninit(),
         ensures
             out.ptr() == self.ptr() as *mut T,
-            out.len() == self.len() / layout::size_of::<T>(),
+            out.len() == capacity,
             out.is_fully_uninit(),
     ;
 }
@@ -2551,6 +2551,13 @@ impl Dealloc {
     pub open spec fn provenance(self) -> Provenance {
         self.view().provenance
     }
+
+    /// We can always create a `Dealloc` permission for an empty allocation with null provenance.
+    pub axiom fn empty() -> (tracked dealloc: Self)
+        ensures
+            dealloc@.provenance == Provenance::null(),
+            dealloc@.size == 0,
+    ;
 }
 
 /// Allocate with the global allocator.
