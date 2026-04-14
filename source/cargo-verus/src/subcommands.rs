@@ -1,4 +1,4 @@
-use std::collections::BTreeSet as Set;
+use std::collections::{BTreeMap as Map, BTreeSet as Set};
 use std::env;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -170,7 +170,7 @@ pub fn run_cargo(cfg: CargoRunConfig) -> Result<ExitCode> {
         ]);
     }
 
-    let (mut command, verified_something) = make_cargo_command(
+    let plan = plan_execution(
         cfg.subcommand,
         &cargo_args,
         common_verus_driver_args,
@@ -182,20 +182,21 @@ pub fn run_cargo(cfg: CargoRunConfig) -> Result<ExitCode> {
     )?;
 
     if cfg.options.verbose {
+        let mut command_preview = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
+        command_preview.arg(&plan.cargo_subcommand).args(&plan.cargo_args);
+        for (key, value) in &plan.env_overrides {
+            command_preview.env(key, value);
+        }
+
         eprintln!(
             "forwarding Verus args to crates: <{}>",
             fwd_verus_args_to.to_possible_value().expect("arg value").get_name(),
         );
-        eprintln!("running cargo command:\n{command:?}");
+        eprintln!("running cargo command:\n{command_preview:?}");
     }
+    let exit_code = execute_plan(&plan)?;
 
-    let exit_status = command
-        .spawn()
-        .context("Failed to spawn cargo")?
-        .wait()
-        .context("Failed to wait for cargo")?;
-
-    if cfg.warn_if_nothing_verified && !verified_something {
+    if cfg.warn_if_nothing_verified && !plan.verified_something {
         eprint!(
             "{}",
             "\
@@ -207,13 +208,7 @@ WARNING: You asked for verification, but cargo did not find any crates that opte
             .red(),
         );
     }
-
-    match exit_status.code() {
-        Some(code) => u8::try_from(code)
-            .map(From::from)
-            .map_err(|_| anyhow!("Command {command:?} terminated with an odd exit code: {code}")),
-        None => bail!("Command {command:?} was terminated by a signal: {exit_status}"),
-    }
+    Ok(exit_code)
 }
 
 fn make_cargo_args(opts: &CargoOptions, for_cargo_metadata: bool) -> Vec<String> {
@@ -289,7 +284,15 @@ fn make_cargo_args(opts: &CargoOptions, for_cargo_metadata: bool) -> Vec<String>
     args
 }
 
-fn make_cargo_command(
+#[derive(Clone, Debug)]
+pub(crate) struct ExecutionPlan {
+    pub cargo_subcommand: String,
+    pub cargo_args: Vec<String>,
+    pub env_overrides: Map<String, String>,
+    pub verified_something: bool,
+}
+
+fn plan_execution(
     subcommand: &str,
     cargo_args: &[String],
     common_verus_driver_args: Vec<String>,
@@ -300,23 +303,18 @@ fn make_cargo_command(
     fwd_verus_args: &[String],
     // Packages to receive forwarded Verus args
     fwd_verus_args_packages: &Set<PackageId>,
-) -> Result<(Command, bool)> {
-    // TODO: use the "+ ... toolchain" argument?
-    let mut cmd = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-
-    cmd.arg(subcommand).args(cargo_args);
-
-    cmd.env("RUSTC_WRAPPER", get_verus_driver_path());
-
-    cmd.env(VERUS_DRIVER_VIA_CARGO, "1");
-
+) -> Result<ExecutionPlan> {
+    let mut env_overrides = Map::new();
+    env_overrides
+        .insert("RUSTC_WRAPPER".to_owned(), get_verus_driver_path().to_string_lossy().into_owned());
+    env_overrides.insert(VERUS_DRIVER_VIA_CARGO.to_owned(), "1".to_owned());
     // See https://github.com/rust-lang/cargo/blob/94aa7fb1321545bbe922a87cb11f5f4559e3be63/src/cargo/core/compiler/fingerprint/mod.rs#L71
-    cmd.env("__CARGO_DEFAULT_LIB_METADATA", "verus");
+    env_overrides.insert("__CARGO_DEFAULT_LIB_METADATA".to_owned(), "verus".to_owned());
 
     let common_verus_driver_args = pack_verus_driver_args_for_env(common_verus_driver_args.iter());
 
     if !common_verus_driver_args.is_empty() {
-        cmd.env(VERUS_DRIVER_ARGS, common_verus_driver_args);
+        env_overrides.insert(VERUS_DRIVER_ARGS.to_owned(), common_verus_driver_args);
     }
 
     let mut verified_something = false;
@@ -338,11 +336,12 @@ fn make_cargo_command(
         // changes.
 
         if verus_metadata.is_builtin {
-            cmd.env(format!("{VERUS_DRIVER_IS_BUILTIN}{package_id}"), "1");
+            env_overrides.insert(format!("{VERUS_DRIVER_IS_BUILTIN}{package_id}"), "1".to_owned());
         }
 
         if verus_metadata.is_builtin_macros {
-            cmd.env(format!("{VERUS_DRIVER_IS_BUILTIN_MACROS}{package_id}"), "1");
+            env_overrides
+                .insert(format!("{VERUS_DRIVER_IS_BUILTIN_MACROS}{package_id}"), "1".to_owned());
         }
 
         if verus_metadata.verify {
@@ -350,7 +349,7 @@ fn make_cargo_command(
             if !verus_metadata.is_vstd && !no_verify {
                 verified_something = true;
             }
-            cmd.env(format!("{VERUS_DRIVER_VERIFY}{package_id}"), "1");
+            env_overrides.insert(format!("{VERUS_DRIVER_VERIFY}{package_id}"), "1".to_owned());
 
             let mut verus_driver_args_for_package = vec![];
 
@@ -396,7 +395,7 @@ fn make_cargo_command(
             }
 
             if !verus_driver_args_for_package.is_empty() {
-                cmd.env(
+                env_overrides.insert(
                     format!("{VERUS_DRIVER_ARGS_FOR}{package_id}"),
                     pack_verus_driver_args_for_env(verus_driver_args_for_package.iter()),
                 );
@@ -404,7 +403,34 @@ fn make_cargo_command(
         }
     }
 
-    Ok((cmd, verified_something))
+    Ok(ExecutionPlan {
+        cargo_subcommand: subcommand.to_owned(),
+        cargo_args: cargo_args.to_vec(),
+        env_overrides,
+        verified_something,
+    })
+}
+
+fn execute_plan(plan: &ExecutionPlan) -> Result<ExitCode> {
+    // TODO: use the "+ ... toolchain" argument?
+    let mut command = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
+    command.arg(&plan.cargo_subcommand).args(&plan.cargo_args);
+    for (key, value) in &plan.env_overrides {
+        command.env(key, value);
+    }
+
+    let exit_status = command
+        .spawn()
+        .context("Failed to spawn cargo")?
+        .wait()
+        .context("Failed to wait for cargo")?;
+
+    match exit_status.code() {
+        Some(code) => u8::try_from(code)
+            .map(From::from)
+            .map_err(|_| anyhow!("Command {command:?} terminated with an odd exit code: {code}")),
+        None => bail!("Command {command:?} was terminated by a signal: {exit_status}"),
+    }
 }
 
 fn pack_verus_driver_args_for_env(args: impl Iterator<Item = impl AsRef<str>>) -> String {
