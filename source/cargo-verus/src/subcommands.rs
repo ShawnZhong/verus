@@ -20,11 +20,14 @@ pub const VERUS_DRIVER_VERIFY: &str = "__VERUS_DRIVER_VERIFY_";
 pub const VERUS_DRIVER_VIA_CARGO: &str = "__VERUS_DRIVER_VIA_CARGO__";
 
 pub struct NewCreationPlan {
+    pub current_dir: PathBuf,
     pub name: String,
     pub is_bin: bool,
 }
 
-pub fn create_new_project(NewCreationPlan { name, is_bin }: &NewCreationPlan) -> Result<ExitCode> {
+pub fn create_new_project(creation_plan: &NewCreationPlan) -> Result<ExitCode> {
+    let NewCreationPlan { current_dir, name, is_bin } = creation_plan;
+
     let (src_rs, src_rs_data) = if *is_bin {
         (
             "main.rs",
@@ -88,7 +91,7 @@ unexpected_cfgs = {{ level = "warn", check-cfg = [
 ] }}"#
     );
 
-    let project_dir = PathBuf::from(name);
+    let project_dir = current_dir.join(name);
     if project_dir.exists() {
         bail!("Directory `{}` already exists", name);
     }
@@ -111,6 +114,7 @@ unexpected_cfgs = {{ level = "warn", check-cfg = [
 }
 
 pub struct VerusConfig {
+    pub current_dir: PathBuf,
     pub subcommand: &'static str,
     pub options: VerifyCommand,
     pub compile_primary: bool,
@@ -128,7 +132,7 @@ pub fn plan_cargo_run(cfg: VerusConfig) -> Result<CargoRunPlan> {
         let for_cargo_metadata = true;
         make_cargo_args(&cfg.options.cargo_opts, for_cargo_metadata)
     };
-    let metadata = fetch_metadata(&metadata_args)?;
+    let metadata = fetch_metadata(metadata_args, cfg.current_dir.clone())?;
     let metadata_index = MetadataIndex::new(&metadata)?;
 
     let (included_packages, _excluded_packages) =
@@ -176,8 +180,9 @@ pub fn plan_cargo_run(cfg: VerusConfig) -> Result<CargoRunPlan> {
     }
 
     let plan = make_cargo_plan(
+        cfg.current_dir,
         cfg.subcommand,
-        &cargo_args,
+        cargo_args,
         common_verus_driver_args,
         &metadata_index,
         packages_to_process,
@@ -291,6 +296,7 @@ fn make_cargo_args(opts: &CargoOptions, for_cargo_metadata: bool) -> Vec<String>
 
 #[derive(Clone, Debug)]
 pub struct CargoRunPlan {
+    pub current_dir: PathBuf,
     pub cargo_subcommand: String,
     pub cargo_args: Vec<String>,
     pub env_overrides: Map<String, String>,
@@ -298,8 +304,9 @@ pub struct CargoRunPlan {
 }
 
 fn make_cargo_plan(
+    current_dir: PathBuf,
     subcommand: &str,
-    cargo_args: &[String],
+    cargo_args: Vec<String>,
     common_verus_driver_args: Vec<String>,
     metadata_index: &MetadataIndex,
     packages_to_process: &Set<PackageId>,
@@ -409,6 +416,7 @@ fn make_cargo_plan(
     }
 
     Ok(CargoRunPlan {
+        current_dir,
         cargo_subcommand: subcommand.to_owned(),
         cargo_args: cargo_args.to_vec(),
         env_overrides,
@@ -419,6 +427,7 @@ fn make_cargo_plan(
 pub fn run_cargo(plan: &CargoRunPlan) -> Result<ExitCode> {
     // TODO: use the "+ ... toolchain" argument?
     let mut command = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
+    command.current_dir(&plan.current_dir);
     command.arg(&plan.cargo_subcommand).args(&plan.cargo_args);
     for (key, value) in &plan.env_overrides {
         command.env(key, value);
