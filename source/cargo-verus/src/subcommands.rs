@@ -193,7 +193,7 @@ pub fn plan_cargo_run(cfg: VerusConfig) -> Result<CargoRunPlan> {
 
     if cfg.options.verbose {
         let mut command_preview = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-        command_preview.arg(&plan.cargo_subcommand).args(&plan.cargo_args);
+        command_preview.arg(plan.subcommand).args(&plan.args);
         for (key, value) in &plan.env_overrides {
             command_preview.env(key, value);
         }
@@ -297,15 +297,15 @@ fn make_cargo_args(opts: &CargoOptions, for_cargo_metadata: bool) -> Vec<String>
 #[derive(Clone, Debug)]
 pub struct CargoRunPlan {
     pub current_dir: PathBuf,
-    pub cargo_subcommand: String,
-    pub cargo_args: Vec<String>,
+    pub subcommand: &'static str,
+    pub args: Vec<String>,
     pub env_overrides: Map<String, String>,
     pub verified_something: bool,
 }
 
 fn make_cargo_plan(
     current_dir: PathBuf,
-    subcommand: &str,
+    subcommand: &'static str,
     cargo_args: Vec<String>,
     common_verus_driver_args: Vec<String>,
     metadata_index: &MetadataIndex,
@@ -417,8 +417,8 @@ fn make_cargo_plan(
 
     Ok(CargoRunPlan {
         current_dir,
-        cargo_subcommand: subcommand.to_owned(),
-        cargo_args: cargo_args.to_vec(),
+        subcommand,
+        args: cargo_args.to_vec(),
         env_overrides,
         verified_something,
     })
@@ -428,7 +428,7 @@ pub fn run_cargo(plan: &CargoRunPlan) -> Result<ExitCode> {
     // TODO: use the "+ ... toolchain" argument?
     let mut command = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
     command.current_dir(&plan.current_dir);
-    command.arg(&plan.cargo_subcommand).args(&plan.cargo_args);
+    command.arg(&plan.subcommand).args(&plan.args);
     for (key, value) in &plan.env_overrides {
         command.env(key, value);
     }
