@@ -194,7 +194,7 @@ pub fn plan_cargo_run(cfg: VerusConfig) -> Result<CargoRunPlan> {
     if cfg.options.verbose {
         let mut command_preview = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
         command_preview.arg(plan.subcommand).args(&plan.args);
-        for (key, value) in &plan.env_overrides {
+        for (key, value) in &plan.env {
             command_preview.env(key, value);
         }
 
@@ -299,7 +299,7 @@ pub struct CargoRunPlan {
     pub current_dir: PathBuf,
     pub subcommand: &'static str,
     pub args: Vec<String>,
-    pub env_overrides: Map<String, String>,
+    pub env: Map<String, String>,
     pub verified_something: bool,
 }
 
@@ -419,7 +419,7 @@ fn make_cargo_plan(
         current_dir,
         subcommand,
         args: cargo_args.to_vec(),
-        env_overrides,
+        env: env_overrides,
         verified_something,
     })
 }
@@ -429,7 +429,7 @@ pub fn run_cargo(plan: &CargoRunPlan) -> Result<ExitCode> {
     let mut command = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
     command.current_dir(&plan.current_dir);
     command.arg(&plan.subcommand).args(&plan.args);
-    for (key, value) in &plan.env_overrides {
+    for (key, value) in &plan.env {
         command.env(key, value);
     }
 
