@@ -1,3 +1,5 @@
+use std::process::ExitCode;
+
 use anyhow::Result;
 
 use crate::{
@@ -8,6 +10,15 @@ use crate::{
 pub enum ExecutionPlan {
     CreateNew(NewCreationPlan),
     RunCargo(CargoRunPlan),
+}
+
+pub fn execute_plan(plan: &ExecutionPlan) -> Result<ExitCode> {
+    use ExecutionPlan::*;
+
+    match plan {
+        CreateNew(creation_plan) => subcommands::create_new_project(creation_plan),
+        RunCargo(cargo_run_plan) => subcommands::run_cargo(cargo_run_plan),
+    }
 }
 
 pub fn plan_execution(args: impl Iterator<Item = String>) -> Result<ExecutionPlan> {

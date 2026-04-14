@@ -12,22 +12,10 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 
-mod cli;
-mod metadata;
-mod plan;
-mod subcommands;
-#[cfg(any(test, feature = "integration-tests"))]
-pub mod test_utils;
-
-use crate::plan::ExecutionPlan;
+use cargo_verus::{execute_plan, plan_execution};
 
 fn main() -> Result<ExitCode> {
-    use ExecutionPlan::*;
-
-    let plan = plan::plan_execution(env::args())?;
-
-    match &plan {
-        CreateNew(creation_plan) => subcommands::create_new_project(creation_plan),
-        RunCargo(cargo_run_plan) => subcommands::run_cargo(cargo_run_plan),
-    }
+    let plan = plan_execution(env::args())?;
+    let exit_code = execute_plan(&plan)?;
+    Ok(exit_code)
 }

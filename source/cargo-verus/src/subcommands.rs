@@ -148,9 +148,9 @@ pub fn plan_cargo_run(cfg: VerusConfig) -> Result<CargoRunPlan> {
         VerusArgFwdSelector::Deps => &dep_packages,
     };
 
-    /////////////////////////////////////////////////
-    // Phase 2: run Verus via `cargo {subcommand}` //
-    /////////////////////////////////////////////////
+    /////////////////////////////////////////////////////////
+    // Phase 2: plan to run Verus via `cargo {subcommand}` //
+    /////////////////////////////////////////////////////////
 
     let cargo_args = {
         let mut options = cfg.options.cargo_opts;
