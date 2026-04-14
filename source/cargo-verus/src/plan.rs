@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::{
     cli::{CargoVerusCli, VerusSubcommand},
-    subcommands::{self, CargoRunConfig, CargoRunPlan, NewCreationPlan},
+    subcommands::{self, CargoRunPlan, NewCreationPlan, VerusConfig},
 };
 
 pub enum ExecutionPlan {
@@ -22,28 +22,28 @@ pub fn plan_execution(args: impl Iterator<Item = String>) -> Result<ExecutionPla
             };
             return Ok(ExecutionPlan::CreateNew(creation_plan));
         }
-        VerusSubcommand::Verify(options) => CargoRunConfig {
+        VerusSubcommand::Verify(options) => VerusConfig {
             subcommand: "check",
             options,
             compile_primary: false,
             verify_deps: true,
             warn_if_nothing_verified: true,
         },
-        VerusSubcommand::Focus(options) => CargoRunConfig {
+        VerusSubcommand::Focus(options) => VerusConfig {
             subcommand: "check",
             options,
             compile_primary: false,
             verify_deps: false,
             warn_if_nothing_verified: true,
         },
-        VerusSubcommand::Build(options) => CargoRunConfig {
+        VerusSubcommand::Build(options) => VerusConfig {
             subcommand: "build",
             options,
             compile_primary: true,
             verify_deps: true,
             warn_if_nothing_verified: false,
         },
-        VerusSubcommand::Check(options) => CargoRunConfig {
+        VerusSubcommand::Check(options) => VerusConfig {
             subcommand: "check",
             options,
             compile_primary: false,

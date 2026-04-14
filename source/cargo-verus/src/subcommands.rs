@@ -110,7 +110,7 @@ unexpected_cfgs = {{ level = "warn", check-cfg = [
     Ok(ExitCode::SUCCESS)
 }
 
-pub struct CargoRunConfig {
+pub struct VerusConfig {
     pub subcommand: &'static str,
     pub options: VerifyCommand,
     pub compile_primary: bool,
@@ -118,7 +118,7 @@ pub struct CargoRunConfig {
     pub warn_if_nothing_verified: bool,
 }
 
-pub fn plan_cargo_run(cfg: CargoRunConfig) -> Result<CargoRunPlan> {
+pub fn plan_cargo_run(cfg: VerusConfig) -> Result<CargoRunPlan> {
     let fwd_verus_args_to = cfg.options.fwd_verus_args_to.expect("fwd_verus_args_to must be set");
 
     //////////////////////////////////////////////////
