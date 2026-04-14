@@ -20,20 +20,38 @@ pub mod test_utils;
 
 use crate::{
     cli::{CargoVerusCli, VerusSubcommand},
-    subcommands::CargoRunConfig,
+    subcommands::{CargoRunConfig, CargoRunPlan, NewCreationPlan},
 };
 
-pub fn main() -> Result<ExitCode> {
-    let parsed_cli = CargoVerusCli::from_args(env::args())?;
+fn main() -> Result<ExitCode> {
+    use ExecutionPlan::*;
+
+    let plan = plan_execution(env::args())?;
+
+    match &plan {
+        CreateNew(creation_plan) => subcommands::create_new_project(creation_plan),
+        RunCargo(cargo_run_plan) => subcommands::run_cargo(cargo_run_plan),
+    }
+}
+
+pub enum ExecutionPlan {
+    CreateNew(NewCreationPlan),
+    RunCargo(CargoRunPlan),
+}
+
+pub fn plan_execution(args: impl Iterator<Item = String>) -> Result<ExecutionPlan> {
+    use ExecutionPlan::*;
+
+    let parsed_cli = CargoVerusCli::from_args(args)?;
 
     let cfg = match parsed_cli.command {
         VerusSubcommand::New(new_cmd) => {
-            match (new_cmd.bin, new_cmd.lib) {
-                (Some(name), None) => subcommands::create_new_project(&name, true)?,
-                (None, Some(name)) => subcommands::create_new_project(&name, false)?,
+            let creation_plan = match (new_cmd.bin, new_cmd.lib) {
+                (Some(name), None) => NewCreationPlan { name, is_bin: true },
+                (None, Some(name)) => NewCreationPlan { name, is_bin: false },
                 _ => unreachable!("clap enforces exactly one of --bin/--lib"),
-            }
-            return Ok(ExitCode::SUCCESS);
+            };
+            return Ok(CreateNew(creation_plan));
         }
         VerusSubcommand::Verify(options) => CargoRunConfig {
             subcommand: "check",
@@ -65,5 +83,7 @@ pub fn main() -> Result<ExitCode> {
         },
     };
 
-    subcommands::run_cargo(cfg)
+    let cargo_run_plan = subcommands::plan_cargo_run(cfg)?;
+
+    Ok(RunCargo(cargo_run_plan))
 }

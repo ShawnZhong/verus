@@ -19,8 +19,13 @@ pub const VERUS_DRIVER_IS_BUILTIN_MACROS: &str = " __VERUS_DRIVER_IS_BUILTIN_MAC
 pub const VERUS_DRIVER_VERIFY: &str = "__VERUS_DRIVER_VERIFY_";
 pub const VERUS_DRIVER_VIA_CARGO: &str = "__VERUS_DRIVER_VIA_CARGO__";
 
-pub fn create_new_project(name: &str, is_bin: bool) -> Result<()> {
-    let (src_rs, src_rs_data) = if is_bin {
+pub struct NewCreationPlan {
+    pub name: String,
+    pub is_bin: bool,
+}
+
+pub fn create_new_project(NewCreationPlan { name, is_bin }: &NewCreationPlan) -> Result<ExitCode> {
+    let (src_rs, src_rs_data) = if *is_bin {
         (
             "main.rs",
             r#"
@@ -102,7 +107,7 @@ unexpected_cfgs = {{ level = "warn", check-cfg = [
 
     println!("Created new Verus project at {name}");
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 pub struct CargoRunConfig {
@@ -113,7 +118,7 @@ pub struct CargoRunConfig {
     pub warn_if_nothing_verified: bool,
 }
 
-pub fn run_cargo(cfg: CargoRunConfig) -> Result<ExitCode> {
+pub fn plan_cargo_run(cfg: CargoRunConfig) -> Result<CargoRunPlan> {
     let fwd_verus_args_to = cfg.options.fwd_verus_args_to.expect("fwd_verus_args_to must be set");
 
     //////////////////////////////////////////////////
@@ -170,7 +175,7 @@ pub fn run_cargo(cfg: CargoRunConfig) -> Result<ExitCode> {
         ]);
     }
 
-    let plan = plan_execution(
+    let plan = make_cargo_plan(
         cfg.subcommand,
         &cargo_args,
         common_verus_driver_args,
@@ -194,7 +199,6 @@ pub fn run_cargo(cfg: CargoRunConfig) -> Result<ExitCode> {
         );
         eprintln!("running cargo command:\n{command_preview:?}");
     }
-    let exit_code = execute_plan(&plan)?;
 
     if cfg.warn_if_nothing_verified && !plan.verified_something {
         eprint!(
@@ -208,7 +212,8 @@ WARNING: You asked for verification, but cargo did not find any crates that opte
             .red(),
         );
     }
-    Ok(exit_code)
+
+    Ok(plan)
 }
 
 fn make_cargo_args(opts: &CargoOptions, for_cargo_metadata: bool) -> Vec<String> {
@@ -285,14 +290,14 @@ fn make_cargo_args(opts: &CargoOptions, for_cargo_metadata: bool) -> Vec<String>
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ExecutionPlan {
+pub struct CargoRunPlan {
     pub cargo_subcommand: String,
     pub cargo_args: Vec<String>,
     pub env_overrides: Map<String, String>,
     pub verified_something: bool,
 }
 
-fn plan_execution(
+fn make_cargo_plan(
     subcommand: &str,
     cargo_args: &[String],
     common_verus_driver_args: Vec<String>,
@@ -303,7 +308,7 @@ fn plan_execution(
     fwd_verus_args: &[String],
     // Packages to receive forwarded Verus args
     fwd_verus_args_packages: &Set<PackageId>,
-) -> Result<ExecutionPlan> {
+) -> Result<CargoRunPlan> {
     let mut env_overrides = Map::new();
     env_overrides
         .insert("RUSTC_WRAPPER".to_owned(), get_verus_driver_path().to_string_lossy().into_owned());
@@ -403,7 +408,7 @@ fn plan_execution(
         }
     }
 
-    Ok(ExecutionPlan {
+    Ok(CargoRunPlan {
         cargo_subcommand: subcommand.to_owned(),
         cargo_args: cargo_args.to_vec(),
         env_overrides,
@@ -411,7 +416,7 @@ fn plan_execution(
     })
 }
 
-fn execute_plan(plan: &ExecutionPlan) -> Result<ExitCode> {
+pub fn run_cargo(plan: &CargoRunPlan) -> Result<ExitCode> {
     // TODO: use the "+ ... toolchain" argument?
     let mut command = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
     command.arg(&plan.cargo_subcommand).args(&plan.cargo_args);
