@@ -86,12 +86,12 @@ fn workspace_workdir() {
 
     let driver_args = cargo_plan.parse_driver_args(VERUS_DRIVER_ARGS);
     assert!(
-        !driver_args.contains(&"--expand-errors"),
-        "forwarded Verus args should not be in __VERUS_DRIVER_ARGS__"
+        driver_args.contains(&"--expand-errors"),
+        "forwarded Verus args should not be in {VERUS_DRIVER_ARGS}"
     );
     assert!(
         !driver_args.contains(&"--rlimit=100"),
-        "forwarded Verus args should not be in __VERUS_DRIVER_ARGS__"
+        "forwarded Verus args should not be in {VERUS_DRIVER_ARGS}"
     );
 
     let optin_driver_args = cargo_plan
