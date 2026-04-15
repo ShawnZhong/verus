@@ -2,7 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::subcommands::{CargoRunPlan, VERUS_DRIVER_ARGS_SEP};
+use crate::subcommands::CargoRunPlan;
+
+pub use crate::subcommands::{
+    CARGO_DEFAULT_LIB_METADATA, RUSTC_WRAPPER, VERUS_DRIVER_ARGS, VERUS_DRIVER_ARGS_FOR,
+    VERUS_DRIVER_ARGS_SEP, VERUS_DRIVER_IS_BUILTIN, VERUS_DRIVER_IS_BUILTIN_MACROS,
+    VERUS_DRIVER_VERIFY, VERUS_DRIVER_VIA_CARGO,
+};
 
 pub struct MockWorkspace {
     members: Vec<MockPackage>,

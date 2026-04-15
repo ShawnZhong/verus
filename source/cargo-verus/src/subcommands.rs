@@ -11,6 +11,10 @@ use colored::Colorize;
 use crate::cli::{CargoOptions, VerifyCommand, VerusArgFwdSelector};
 use crate::metadata::{MetadataIndex, fetch_metadata, make_package_id};
 
+pub const CARGO_DEFAULT_LIB_METADATA: &str = "__CARGO_DEFAULT_LIB_METADATA";
+
+pub const RUSTC_WRAPPER: &str = "RUSTC_WRAPPER";
+
 pub const VERUS_DRIVER_ARGS: &str = " __VERUS_DRIVER_ARGS__";
 pub const VERUS_DRIVER_ARGS_FOR: &str = " __VERUS_DRIVER_ARGS_FOR_";
 pub const VERUS_DRIVER_ARGS_SEP: &str = "__VERUS_DRIVER_ARGS_SEP__";
@@ -324,10 +328,10 @@ fn make_cargo_plan(
 ) -> Result<CargoRunPlan> {
     let mut env_overrides = Map::new();
     env_overrides
-        .insert("RUSTC_WRAPPER".to_owned(), get_verus_driver_path().to_string_lossy().into_owned());
+        .insert(RUSTC_WRAPPER.to_owned(), get_verus_driver_path().to_string_lossy().into_owned());
     env_overrides.insert(VERUS_DRIVER_VIA_CARGO.to_owned(), "1".to_owned());
     // See https://github.com/rust-lang/cargo/blob/94aa7fb1321545bbe922a87cb11f5f4559e3be63/src/cargo/core/compiler/fingerprint/mod.rs#L71
-    env_overrides.insert("__CARGO_DEFAULT_LIB_METADATA".to_owned(), "verus".to_owned());
+    env_overrides.insert(CARGO_DEFAULT_LIB_METADATA.to_owned(), "verus".to_owned());
 
     let common_verus_driver_args = pack_verus_driver_args_for_env(common_verus_driver_args.iter());
 
