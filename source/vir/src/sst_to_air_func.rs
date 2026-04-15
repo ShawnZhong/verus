@@ -648,12 +648,9 @@ pub fn func_decl_to_air(ctx: &mut Ctx, function: &FunctionSst) -> Result<Command
     if function.x.has.has_requires && !function.x.attrs.broadcast_forall_only {
         assert!(!is_trait_method_impl);
 
-        let msg = match (function.x.mode, &function.x.attrs.custom_req_err) {
-            // We don't highlight the failed precondition if the programmer supplied their own msg
-            (_, Some(_)) => None,
-            // Standard message
-            (Mode::Spec, None) => Some("recommendation not met".to_string()),
-            (_, None) => Some(THIS_PRE_FAILED.to_string()),
+        let msg = match function.x.mode {
+            Mode::Spec => Some("recommendation not met".to_string()),
+            _ => Some(THIS_PRE_FAILED.to_string()),
         };
         let _ = req_ens_to_air(
             ctx,
