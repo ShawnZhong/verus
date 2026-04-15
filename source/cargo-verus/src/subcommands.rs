@@ -192,17 +192,12 @@ pub fn plan_cargo_run(cfg: VerusConfig) -> Result<CargoRunPlan> {
     )?;
 
     if cfg.options.verbose {
-        let mut command_preview = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-        command_preview.arg(plan.subcommand).args(&plan.args);
-        for (key, value) in &plan.env {
-            command_preview.env(key, value);
-        }
-
+        let command = plan.to_command();
         eprintln!(
             "forwarding Verus args to crates: <{}>",
             fwd_verus_args_to.to_possible_value().expect("arg value").get_name(),
         );
-        eprintln!("running cargo command:\n{command_preview:?}");
+        eprintln!("running cargo command:\n{command:?}");
     }
 
     if cfg.warn_if_nothing_verified && !plan.verified_something {
@@ -297,16 +292,27 @@ fn make_cargo_args(opts: &CargoOptions, for_cargo_metadata: bool) -> Vec<String>
 #[derive(Clone, Debug)]
 pub struct CargoRunPlan {
     pub current_dir: PathBuf,
-    pub subcommand: &'static str,
     pub args: Vec<String>,
     pub env: Map<String, String>,
     pub verified_something: bool,
 }
 
+impl CargoRunPlan {
+    fn to_command(&self) -> Command {
+        let mut command = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
+        command.current_dir(&self.current_dir);
+        command.args(&self.args);
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
+        command
+    }
+}
+
 fn make_cargo_plan(
     current_dir: PathBuf,
     subcommand: &'static str,
-    cargo_args: Vec<String>,
+    mut cargo_args: Vec<String>,
     common_verus_driver_args: Vec<String>,
     metadata_index: &MetadataIndex,
     packages_to_process: &Set<PackageId>,
@@ -415,23 +421,15 @@ fn make_cargo_plan(
         }
     }
 
-    Ok(CargoRunPlan {
-        current_dir,
-        subcommand,
-        args: cargo_args.to_vec(),
-        env: env_overrides,
-        verified_something,
-    })
+    let mut args = vec![subcommand.to_owned()];
+    args.append(&mut cargo_args);
+
+    Ok(CargoRunPlan { current_dir, args, env: env_overrides, verified_something })
 }
 
 pub fn run_cargo(plan: &CargoRunPlan) -> Result<ExitCode> {
     // TODO: use the "+ ... toolchain" argument?
-    let mut command = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-    command.current_dir(&plan.current_dir);
-    command.arg(&plan.subcommand).args(&plan.args);
-    for (key, value) in &plan.env {
-        command.env(key, value);
-    }
+    let mut command = plan.to_command();
 
     let exit_status = command
         .spawn()

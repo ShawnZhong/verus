@@ -79,8 +79,7 @@ fn workspace_workdir() {
         panic!("expected `ExecutionPlan::RunCargo`");
     };
 
-    assert_eq!(cargo_plan.subcommand, "build");
-    assert_eq!(cargo_plan.args, ["--release"]);
+    assert_eq!(cargo_plan.args, ["build", "--release"]);
 
     let driver_args = cargo_plan.parse_driver_args(" __VERUS_DRIVER_ARGS__");
     assert!(
