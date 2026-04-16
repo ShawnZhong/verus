@@ -1,0 +1,13 @@
+# Cargo build output
+/target/
+
+# wasm-pack output (regenerate: `wasm-pack build --target web --out-dir web/pkg`)
+/web/pkg/
+
+# Self-built Z3 wasm (regenerate: `scripts/build-z3-wasm.sh`)
+/web/z3/z3.js
+/web/z3/z3.wasm
+
+# Toolchain + Z3 source caches (scripts/build-z3-wasm.sh will re-bootstrap)
+/scripts/emsdk/
+/scripts/z3/
