@@ -10,6 +10,23 @@ pub use crate::model::{Model, ModelDef};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+// Instant::now() panics on wasm32-unknown-unknown (no clock).
+// We only use it to measure elapsed SMT time, which the explorer doesn't read,
+// so a zero-duration stub is fine.
+#[cfg(not(target_arch = "wasm32"))]
+type Instant = std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+struct Instant;
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    fn now() -> Self {
+        Instant
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+}
+
 fn label_asserts<'ctx>(
     context: &mut Context,
     infos: &mut Vec<AssertionInfo>,
@@ -171,7 +188,7 @@ pub(crate) fn smt_check_assertion<'ctx>(
     };
 
     context.smt_log.log_get_info("version");
-    let smt_init_start_time = std::time::Instant::now();
+    let smt_init_start_time = Instant::now();
     let smt_data = context.smt_log.take_pipe_data();
     let early_smt_output = context.get_smt_process().send_commands(smt_data);
     context.time_smt_init += smt_init_start_time.elapsed();
@@ -214,7 +231,7 @@ pub(crate) fn smt_check_assertion<'ctx>(
     context.smt_log.log_word("check-sat");
 
     // Run SMT solver
-    let smt_run_start_time = std::time::Instant::now();
+    let smt_run_start_time = Instant::now();
     let smt_data = context.smt_log.take_pipe_data();
     let commands_handle = context.get_smt_process().send_commands_async(smt_data);
     let smt_output = if let Some((report_threshold, report_fn)) = report_long_running {

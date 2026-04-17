@@ -1,4 +1,15 @@
 use crate::context::SmtSolver;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{CommandsHandle, SmtProcess};
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm::{CommandsHandle, SmtProcess};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+
+use super::SmtSolver;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -237,6 +248,97 @@ impl Drop for SmtProcess {
         std::mem::drop(self.requests.take());
         if let Err(e) = self.child.wait() {
             panic!("smt process exited with error: {:?}", e);
+        }
+    }
+}
+
+} // mod native
+
+#[cfg(target_arch = "wasm32")]
+mod wasm {
+    // wasm32 has no subprocesses or threads — Z3 is provided by the host (JS),
+    // which async-loads the Emscripten module and stashes it at globalThis.Z3.
+    // The bindings below are 1:1 wrappers over the Z3 C API, reached via
+    // ccall on the stashed module. Each SmtProcess owns a Z3_context, created
+    // in launch() and freed in Drop — symmetric to native, where launch()
+    // spawns a z3 subprocess.
+
+    use super::SmtSolver;
+    use std::io::Write;
+
+    // The host page (e.g. explorer/public/index.html) is responsible for
+    // defining these on globalThis as ccall wrappers over the emscripten
+    // Z3 module. They're declared as plain JS functions so wasm-bindgen can
+    // marshal Rust <-> JS types; the emscripten-side marshalling lives in
+    // the ccall calls on the JS side.
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    #[allow(non_snake_case)]
+    extern "C" {
+        fn Z3_mk_config() -> u32;
+        fn Z3_mk_context(cfg: u32) -> u32;
+        fn Z3_del_config(cfg: u32);
+        fn Z3_eval_smtlib2_string(ctx: u32, script: &str) -> String;
+        fn Z3_del_context(ctx: u32);
+    }
+
+    pub struct SmtProcess {
+        z3_ctx: u32,
+    }
+
+    impl SmtProcess {
+        pub fn launch(_solver: &SmtSolver, _transcript_log: Option<Box<dyn Write>>) -> Self {
+            let cfg = Z3_mk_config();
+            let z3_ctx = Z3_mk_context(cfg);
+            Z3_del_config(cfg);
+            SmtProcess { z3_ctx }
+        }
+
+        pub(crate) fn set_transcript_log(&mut self, _writer: Box<dyn Write>) {}
+
+        pub(crate) fn send_commands(&mut self, commands: Vec<u8>) -> Vec<String> {
+            self.send_commands_async(commands).wait()
+        }
+
+        pub(crate) fn send_commands_async<'a>(
+            &'a mut self,
+            commands: Vec<u8>,
+        ) -> CommandsHandle<'a> {
+            let script = std::str::from_utf8(&commands)
+                .expect("non-utf8 in SMT commands sent to wasm Z3 bridge");
+            let raw = Z3_eval_smtlib2_string(self.z3_ctx, script);
+            // Z3_eval_smtlib2_string returns the solver's stdout. Split on newlines
+            // and drop empties to match what the native pipe-reader produces.
+            let lines: Vec<String> = raw
+                .lines()
+                .map(|l| l.trim_end_matches('\r').to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            CommandsHandle { _smt_process: self, result: Some(lines) }
+        }
+    }
+
+    impl Drop for SmtProcess {
+        fn drop(&mut self) {
+            Z3_del_context(self.z3_ctx);
+        }
+    }
+
+    pub struct CommandsHandle<'a> {
+        _smt_process: &'a mut SmtProcess,
+        result: Option<Vec<String>>,
+    }
+
+    impl<'a> CommandsHandle<'a> {
+        pub fn wait(mut self) -> Vec<String> {
+            self.result.take().expect("CommandsHandle waited twice")
+        }
+
+        pub fn wait_timeout(
+            self,
+            _timeout: std::time::Duration,
+        ) -> Result<Vec<String>, Self> {
+            // wasm bridge is synchronous — never times out.
+            Ok(self.wait())
         }
     }
 }

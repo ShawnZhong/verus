@@ -33,6 +33,7 @@ dependencies = [
  "serde",
  "sise",
  "smt-scope",
+ "wasm-bindgen",
  "win32job",
  "yansi",
 ]
@@ -1131,9 +1132,9 @@ name = "verus-explorer"
 version = "0.1.0"
 dependencies = [
  "air",
+ "sise",
  "vir",
  "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]

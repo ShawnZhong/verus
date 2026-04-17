@@ -1,200 +1,186 @@
 // verus-explorer — browser-based exploration of Verus's internal representations.
 //
 // This crate compiles `vir` and `air` (as-is, via path dependencies) to wasm32
-// and exposes a wasm-bindgen entry point that drives a minimal verification
-// end-to-end. SMT is routed through the self-hosted single-threaded Z3 wasm
-// in web/z3/ via `globalThis.__verusExplorerZ3Eval`.
+// and exposes a wasm-bindgen entry point that drives a real AIR query through
+// `air::context::Context` end-to-end. SMT is routed through the wasm32
+// `SmtProcess` shim added in air/src/smt_process.rs, which calls
+// `globalThis.__verusExplorerZ3Eval` — installed by web/index.html on top of
+// the self-hosted single-threaded Z3 wasm in web/z3/.
+//
+// What this proves: vir + air compile to wasm32, the SmtProcess abstraction is
+// cleanly replaceable, and AIR-generated SMT round-trips through the browser
+// Z3. Driving a hand-built `vir::ast::Krate` through `ast_to_sst → sst_to_air`
+// is the next step.
 
 use std::sync::Arc;
 
-/// Construct a small AIR expression — exercises air::ast types.
-fn air_smoke_test() -> String {
-    use air::ast::{BinaryOp, Constant, ExprX};
-    let one = Arc::new(ExprX::Const(Constant::Nat(Arc::new("1".into()))));
-    let two = Arc::new(ExprX::Const(Constant::Nat(Arc::new("2".into()))));
-    let sum = Arc::new(ExprX::Binary(BinaryOp::EuclideanMod, one, two));
-    format!("AIR expr built: {:?}", sum)
+use air::ast::CommandX;
+use air::context::{Context, SmtSolver, ValidityResult};
+use air::messages::{AirMessageInterface, Reporter};
+use air::parser::Parser;
+
+/// One AIR query, plus the verdict we got back.
+struct QueryRun {
+    label: &'static str,
+    air: String,
+    /// "Valid" / "Invalid" / "TypeError(...)" / "UnexpectedOutput(...)" / "Canceled"
+    verdict: String,
+    /// True iff the assertion was proved (the negation was unsat).
+    proved: bool,
 }
 
-/// Construct an empty VIR krate — exercises vir::ast types.
-fn vir_smoke_test() -> String {
-    use vir::ast::{Arch, ArchWordBits, KrateX};
-    let krate = KrateX {
-        functions: vec![],
-        reveal_groups: vec![],
-        datatypes: vec![],
-        traits: vec![],
-        trait_impls: vec![],
-        assoc_type_impls: vec![],
-        modules: vec![],
-        external_fns: vec![],
-        external_types: vec![],
-        path_as_rust_names: vec![],
-        arch: Arch { word_bits: ArchWordBits::Either32Or64 },
-        opaque_types: vec![],
+/// AIR scripts — these are the real Verus AIR surface, not the SMT-LIB sent
+/// to Z3. `air::context::Context` is what lowers them and runs check-sat.
+const QUERIES: &[(&str, &str)] = &[
+    (
+        "commutativity of +",
+        r#"
+            (check-valid
+                (declare-const x Int)
+                (declare-const y Int)
+                (assert (= (+ x y) (+ y x))))
+        "#,
+    ),
+    (
+        "false claim: x == 0 for all x",
+        r#"
+            (check-valid
+                (declare-const x Int)
+                (assert (= x 0)))
+        "#,
+    ),
+];
+
+fn run_one_query(label: &'static str, air_script: &str) -> QueryRun {
+    let message_interface = Arc::new(AirMessageInterface {});
+    let reporter = Reporter {};
+
+    // The AIR parser expects a top-level list of commands; wrap in parens.
+    let mut bytes: Vec<u8> = Vec::with_capacity(air_script.len() + 2);
+    bytes.push(b'(');
+    bytes.extend_from_slice(air_script.as_bytes());
+    bytes.push(b')');
+    let mut sise_parser = sise::Parser::new(&bytes);
+    let node = sise::read_into_tree(&mut sise_parser).expect("AIR sise parse");
+    let nodes = match node {
+        sise::Node::List(nodes) => nodes,
+        sise::Node::Atom(_) => panic!("expected list at AIR top level"),
     };
-    format!(
-        "vir::KrateX built: {} fns, {} datatypes, {} traits",
-        krate.functions.len(),
-        krate.datatypes.len(),
-        krate.traits.len(),
-    )
+    let commands = Parser::new(message_interface.clone())
+        .nodes_to_commands(&nodes)
+        .expect("AIR parse");
+
+    let mut ctx = Context::new(message_interface.clone(), SmtSolver::Z3);
+    ctx.set_z3_param("air_recommended_options", "true");
+
+    let mut verdict = String::from("Valid");
+    let mut proved = true;
+    for command in commands.iter() {
+        let result = ctx.command(&*message_interface, &reporter, command, Default::default());
+        match (&**command, &result) {
+            (CommandX::CheckValid(_), ValidityResult::Valid(_)) => {
+                verdict = "Valid".to_string();
+                proved = true;
+            }
+            (CommandX::CheckValid(_), ValidityResult::Invalid(_, _, _)) => {
+                verdict = "Invalid".to_string();
+                proved = false;
+            }
+            (CommandX::CheckValid(_), ValidityResult::Canceled) => {
+                verdict = "Canceled".to_string();
+                proved = false;
+            }
+            (CommandX::CheckValid(_), ValidityResult::TypeError(e)) => {
+                verdict = format!("TypeError({:?})", e);
+                proved = false;
+            }
+            (CommandX::CheckValid(_), ValidityResult::UnexpectedOutput(s)) => {
+                verdict = format!("UnexpectedOutput({})", s);
+                proved = false;
+            }
+            (_, ValidityResult::TypeError(e)) => {
+                verdict = format!("TypeError({:?})", e);
+                proved = false;
+            }
+            _ => {}
+        }
+        if matches!(&**command, CommandX::CheckValid(_)) {
+            ctx.finish_query();
+        }
+    }
+
+    QueryRun {
+        label,
+        air: air_script.trim().to_string(),
+        verdict,
+        proved,
+    }
 }
-
-/// SMT payload matching what Verus emits for `forall x: int :: x + 0 == x`,
-/// modulo boxing sugar.
-const POC_SMT_QUERY: &str = r#"
-(set-option :auto_config false)
-(set-option :smt.mbqi false)
-(set-option :smt.case_split 3)
-
-(declare-fun add_zero (Int) Int)
-(assert (forall ((x Int))
-  (! (= (add_zero x) x)
-     :pattern ((add_zero x)))))
-
-(push)
-(declare-const x_sym Int)
-(assert (! (not (= (add_zero x_sym) (+ x_sym 0)))
-            :named assertion_add_zero_correct))
-(check-sat)
-(pop)
-
-(push)
-(declare-const y_sym Int)
-(assert (! (not (= (add_zero y_sym) (+ y_sym 1)))
-            :named assertion_off_by_one))
-(check-sat)
-(pop)
-"#;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_entry {
     use wasm_bindgen::prelude::*;
 
-    // The host (index.html) installs `globalThis.__verusExplorerZ3Eval` before
-    // calling run_poc(); it points at the single-threaded Z3 wasm in web/z3/.
-    #[wasm_bindgen(inline_js = r#"
-        export async function z3Eval(script) {
-            if (typeof globalThis.__verusExplorerZ3Eval !== 'function') {
-                throw new Error('verus-explorer: globalThis.__verusExplorerZ3Eval not installed by host');
-            }
-            return await globalThis.__verusExplorerZ3Eval(script);
-        }
-    "#)]
+    // JS-side sink for Rust panics — defined on globalThis by index.html, which
+    // appends the message to #out so the user sees it in the page, not just the
+    // devtools console. Without a hook, panics abort as "unreachable executed"
+    // with no message.
+    #[wasm_bindgen]
     extern "C" {
-        #[wasm_bindgen(js_name = z3Eval, catch)]
-        async fn z3_eval(script: &str) -> Result<JsValue, JsValue>;
+        fn reportPanic(msg: &str);
     }
 
-    /// Result of `run_poc`. Fields are read directly from JS; no JSON.
+    // Runs automatically when the wasm module is instantiated (wasm-bindgen
+    // wires this up so JS's `await init()` triggers it exactly once).
+    #[wasm_bindgen(start)]
+    fn init() {
+        std::panic::set_hook(Box::new(|info| reportPanic(&info.to_string())));
+    }
+
+    /// Result of one AIR query — surfaced to JS field-by-field (no JSON).
     #[wasm_bindgen]
-    pub struct PocResult {
-        pub verified: bool,
-        #[wasm_bindgen(getter_with_clone)] pub vir: String,
-        #[wasm_bindgen(getter_with_clone)] pub air: String,
-        #[wasm_bindgen(getter_with_clone)] pub smt_raw: String,
-        #[wasm_bindgen(getter_with_clone)] pub smt_results: Vec<String>,
-        #[wasm_bindgen(getter_with_clone)] pub error: Option<String>,
+    #[derive(Clone)]
+    pub struct Query {
+        #[wasm_bindgen(getter_with_clone)]
+        pub label: String,
+        #[wasm_bindgen(getter_with_clone)]
+        pub air: String,
+        #[wasm_bindgen(getter_with_clone)]
+        pub verdict: String,
+        pub proved: bool,
     }
 
-    fn parse_check_sat_results(output: &str) -> Vec<String> {
-        output
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| l == "sat" || l == "unsat" || l == "unknown")
-            .collect()
+    /// Aggregate result of `run`.
+    #[wasm_bindgen]
+    pub struct Output {
+        pub all_expected: bool,
+        #[wasm_bindgen(getter_with_clone)]
+        pub queries: Vec<Query>,
     }
 
     #[wasm_bindgen]
-    pub async fn run_poc() -> PocResult {
-        let vir = super::vir_smoke_test();
-        let air = super::air_smoke_test();
+    pub fn run() -> Output {
+        // Per-query expectation: index 0 is provable, index 1 is not.
+        let expectations = [true, false];
 
-        let smt_raw = match z3_eval(super::POC_SMT_QUERY).await {
-            Ok(v) => v.as_string().unwrap_or_default(),
-            Err(e) => {
-                let msg = e.as_string().unwrap_or_else(|| format!("{:?}", e));
-                return PocResult {
-                    verified: false,
-                    vir, air,
-                    smt_raw: String::new(),
-                    smt_results: vec![],
-                    error: Some(msg),
-                };
+        let mut all_expected = true;
+        let mut queries: Vec<Query> = Vec::new();
+        for (i, (label, script)) in super::QUERIES.iter().enumerate() {
+            let run = super::run_one_query(label, script);
+            if run.proved != expectations[i] {
+                all_expected = false;
             }
-        };
-
-        let smt_results = parse_check_sat_results(&smt_raw);
-        let verified = smt_results.first().map(|s| s == "unsat").unwrap_or(false);
-
-        PocResult {
-            verified,
-            vir, air, smt_raw, smt_results,
-            error: None,
+            queries.push(Query {
+                label: run.label.to_string(),
+                air: run.air,
+                verdict: run.verdict,
+                proved: run.proved,
+            });
         }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn smoke_tests_run_natively() {
-        assert!(!air_smoke_test().is_empty());
-        assert!(!vir_smoke_test().is_empty());
-    }
-
-    #[test]
-    fn vir_pipeline_runs_without_rustc() {
-        use std::sync::{Arc, Mutex};
-        use vir::ast::{Arch, ArchWordBits, KrateX};
-        use vir::context::GlobalCtx;
-        use vir::messages::Span;
-
-        let krate = Arc::new(KrateX {
-            functions: vec![],
-            reveal_groups: vec![],
-            datatypes: vec![],
-            traits: vec![],
-            trait_impls: vec![],
-            assoc_type_impls: vec![],
-            modules: vec![],
-            external_fns: vec![],
-            external_types: vec![],
-            path_as_rust_names: vec![],
-            arch: Arch { word_bits: ArchWordBits::Either32Or64 },
-            opaque_types: vec![],
-        });
-
-        let no_span = Span {
-            raw_span: Arc::new(()),
-            id: 0,
-            data: vec![],
-            as_string: "<explorer-no-span>".into(),
-        };
-
-        let mut ctx = GlobalCtx::new(
-            &krate,
-            Arc::new("explorer_crate".to_string()),
-            no_span,
-            10.0,
-            Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(None)),
-            air::context::SmtSolver::Z3,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-        )
-        .expect("GlobalCtx::new should succeed on empty krate");
-
-        let simplified = vir::ast_simplify::simplify_krate(&mut ctx, &krate)
-            .expect("simplify_krate should succeed on empty krate");
-
-        assert_eq!(simplified.functions.len(), 0);
+        Output {
+            all_expected,
+            queries,
+        }
     }
 }

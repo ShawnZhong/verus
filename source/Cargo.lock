@@ -50,6 +50,7 @@ dependencies = [
  "serde",
  "sise",
  "smt-scope",
+ "wasm-bindgen",
  "win32job",
  "yansi",
 ]
