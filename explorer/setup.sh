@@ -8,17 +8,17 @@
 
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENDOR_DIR="${HERE}/third_party"
-EMSDK_DIR="${VENDOR_DIR}/emsdk"
+PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+THIRD_PARTY_DIR="${PROJ_ROOT}/third_party"
+EMSDK_DIR="${THIRD_PARTY_DIR}/emsdk"
 EMSDK_VERSION="3.1.74"
-Z3_DIR="${VENDOR_DIR}/z3"
+Z3_DIR="${THIRD_PARTY_DIR}/z3"
 Z3_TAG="z3-4.16.0"
 
 echo "--- adding wasm32-unknown-unknown rust target"
 rustup target add wasm32-unknown-unknown
 
-mkdir -p "${VENDOR_DIR}"
+mkdir -p "${THIRD_PARTY_DIR}"
 
 if [[ ! -d "${EMSDK_DIR}" ]]; then
     echo "--- cloning emsdk"
