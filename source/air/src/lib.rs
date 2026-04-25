@@ -9,6 +9,7 @@ pub mod parser;
 pub mod profiler;
 pub mod scope_map;
 pub mod smt_process;
+pub mod time;
 
 #[macro_use]
 pub mod printer;

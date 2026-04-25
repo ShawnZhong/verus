@@ -104,7 +104,6 @@ pub struct Context {
     pub(crate) air_middle_log: Emitter,
     pub(crate) air_final_log: Emitter,
     pub(crate) smt_log: Emitter,
-    pub(crate) smt_transcript_log: Option<Box<dyn std::io::Write>>,
     pub(crate) time_smt_init: Duration,
     pub(crate) time_smt_run: Duration,
     pub(crate) rlimit_count: Option<(u64, u64)>,
@@ -168,7 +167,6 @@ impl Context {
                 solver.clone(),
             ),
             smt_log: Emitter::new(message_interface.clone(), true, true, None, solver.clone()),
-            smt_transcript_log: None,
             time_smt_init: Duration::new(0, 0),
             time_smt_run: Duration::new(0, 0),
             rlimit_count: match solver {
@@ -196,8 +194,7 @@ impl Context {
     pub fn get_smt_process(&mut self) -> &mut SmtProcess {
         // Only start the smt process if there are queries to run
         if self.smt_process.is_none() {
-            let transcript_log = self.smt_transcript_log.take();
-            self.smt_process = Some(SmtProcess::launch(&self.solver, transcript_log));
+            self.smt_process = Some(SmtProcess::launch(&self.solver));
         }
         self.smt_process.as_mut().unwrap()
     }
@@ -214,16 +211,30 @@ impl Context {
         self.air_final_log.set_log(Some(writer));
     }
 
+    // Commands-only `.smt2` output (replayable in `z3 -in`). Receives
+    // every command + section marker emitted through `smt_log`, but
+    // never the response blocks — those go to `transcript_log` only.
     pub fn set_smt_log(&mut self, writer: Box<dyn std::io::Write>) {
         self.smt_log.set_log(Some(writer));
     }
 
+    // Full transcript: same commands + section markers as `set_smt_log`,
+    // plus a `;;> response <ms>ms\n…\n;;<` block per Z3 round trip.
+    // Wired through `Emitter::transcript_log`; response blocks are
+    // appended by `log_smt_response` at the call sites that own the
+    // request/reply pair.
     pub fn set_smt_transcript_log(&mut self, writer: Box<dyn std::io::Write>) {
-        if let Some(smt_process) = &mut self.smt_process {
-            smt_process.set_transcript_log(writer);
-        } else {
-            self.smt_transcript_log = Some(writer);
-        }
+        self.smt_log.set_transcript_log(Some(writer));
+    }
+
+    // Append a response block to the SMT transcript. Caller times the
+    // round trip (an `Instant::now()` before `send_commands*` /
+    // `wait()` is enough — the result lands right after the commands
+    // that triggered it because commands flow through `smt_log` at
+    // emission time).
+    pub fn log_smt_response(&mut self, elapsed: Duration, lines: &[String]) {
+        let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
+        self.smt_log.log_response_block(elapsed_ms, lines);
     }
 
     pub fn set_debug(&mut self, debug: bool) {
@@ -295,6 +306,28 @@ impl Context {
         self.air_middle_log.comment(s);
         self.air_final_log.comment(s);
         self.smt_log.comment(s);
+    }
+
+    // verus-explorer: structured section open marker — see
+    // `Emitter::section`. Fans the marker to all four emitters
+    // (AIR_INITIAL/MIDDLE/FINAL + SMT). For SMT, both
+    // `set_smt_log` (commands-only) and `set_smt_transcript_log`
+    // (full transcript) writers receive the marker — section
+    // structure is part of the commands view, not the responses.
+    // Response blocks land on the transcript writer only via
+    // `log_smt_response`.
+    pub fn section(&mut self, marker: char, label: &str) {
+        self.air_initial_log.section(marker, label);
+        self.air_middle_log.section(marker, label);
+        self.air_final_log.section(marker, label);
+        self.smt_log.section(marker, label);
+    }
+
+    pub fn section_close(&mut self) {
+        self.air_initial_log.section_close();
+        self.air_middle_log.section_close();
+        self.air_final_log.section_close();
+        self.smt_log.section_close();
     }
 
     fn log_set_z3_param(&mut self, option: &str, value: &str) {
@@ -408,8 +441,11 @@ impl Context {
                     let profile_logfile_name = profile_logfile_name.replace("\\", "/");
                     self.log_set_z3_param("trace_file_name", &profile_logfile_name);
                 }
-                self.blank_line();
-                self.comment("AIR prelude");
+                // verus-explorer: dropped the leading `blank_line()` so
+                // the prelude drain starts with `;;> AIR prelude` on
+                // line 1 — the `>` marker asks the browser's fold
+                // scanner to start an auto-folded section (▸).
+                self.section('>', "AIR prelude");
                 self.smt_log.log_node(&node!((declare-sort {str_to_node(crate::def::FUNCTION)} 0)));
                 self.blank_line();
                 self.state = ContextState::ReadyForQuery;
@@ -530,7 +566,9 @@ impl Context {
     pub fn eval_expr(&mut self, expr: sise::Node) -> String {
         self.smt_log.log_eval(expr);
         let smt_data = self.smt_log.take_pipe_data();
+        let t0 = crate::time::Instant::now();
         let smt_output = self.get_smt_process().send_commands(smt_data);
+        self.log_smt_response(t0.elapsed(), &smt_output);
         if smt_output.len() != 1 {
             panic!("unexpected output from SMT eval {:?}", &smt_output);
         }

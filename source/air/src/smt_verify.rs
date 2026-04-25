@@ -7,6 +7,7 @@ use crate::context::{AssertionInfo, AxiomInfo, Context, ContextState, SmtSolver,
 use crate::def::{GLOBAL_PREFIX_LABEL, PREFIX_LABEL};
 use crate::messages::{ArcDynMessage, Diagnostics};
 pub use crate::model::{Model, ModelDef};
+use crate::time::Instant;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -104,12 +105,34 @@ pub(crate) fn smt_add_decl<'ctx>(context: &mut Context, decl: &Decl) {
             let mut axiom_infos: Vec<AxiomInfo> = Vec::new();
             let labeled_expr = label_asserts(context, &mut infos, &mut axiom_infos, &expr);
             for info in axiom_infos {
+                // verus-explorer: wrap each label's decls in a
+                // `;;v <note>` section so the browser can fold
+                // them while keeping them expanded by default.
+                // Spans (`;; <input.rs>:L:C:…`) stay as plain
+                // comments for span-to-source jump links. Close
+                // matches the open per-label; if multiple labels
+                // exist, they nest.
+                let mut open_count = 0u32;
+                for label in info.labels.iter() {
+                    let span = context.message_interface.get_message_label_span_as_string(label);
+                    if !span.is_empty() {
+                        context.smt_log.comment(span);
+                    }
+                    let note = context.message_interface.get_message_label_note(label);
+                    if !note.is_empty() {
+                        context.smt_log.section('v', &note);
+                        open_count += 1;
+                    }
+                }
                 crate::typecheck::add_decl(context, &info.decl, true).unwrap();
                 context
                     .axiom_infos
                     .insert(info.label.clone(), Arc::new(info.clone()))
                     .expect("internal error: duplicate assert_info");
                 smt_add_decl(context, &info.decl);
+                for _ in 0..open_count {
+                    context.smt_log.section_close();
+                }
             }
             context.smt_log.log_assert(named, &labeled_expr);
         }
@@ -171,10 +194,12 @@ pub(crate) fn smt_check_assertion<'ctx>(
     };
 
     context.smt_log.log_get_info("version");
-    let smt_init_start_time = std::time::Instant::now();
+    let smt_init_start_time = Instant::now();
     let smt_data = context.smt_log.take_pipe_data();
     let early_smt_output = context.get_smt_process().send_commands(smt_data);
-    context.time_smt_init += smt_init_start_time.elapsed();
+    let early_elapsed = smt_init_start_time.elapsed();
+    context.time_smt_init += early_elapsed;
+    context.log_smt_response(early_elapsed, &early_smt_output);
     for line in early_smt_output {
         if line.starts_with(GET_VERSION_RESPONSE_PREFIX) {
             if let Some(expected_version) = &context.expected_solver_version {
@@ -214,23 +239,25 @@ pub(crate) fn smt_check_assertion<'ctx>(
     context.smt_log.log_word("check-sat");
 
     // Run SMT solver
-    let smt_run_start_time = std::time::Instant::now();
+    let smt_run_start_time = Instant::now();
     let smt_data = context.smt_log.take_pipe_data();
     let commands_handle = context.get_smt_process().send_commands_async(smt_data);
     let smt_output = if let Some((report_threshold, report_fn)) = report_long_running {
         match commands_handle.wait_timeout(*report_threshold) {
-            Ok(smt_output) => smt_output,
+            Ok(out) => out,
             Err(handle) => {
                 report_fn(smt_run_start_time.elapsed(), false);
-                let smt_output = handle.wait();
+                let out = handle.wait();
                 report_fn(smt_run_start_time.elapsed(), true);
-                smt_output
+                out
             }
         }
     } else {
         commands_handle.wait()
     };
-    context.time_smt_run += smt_run_start_time.elapsed();
+    let smt_elapsed = smt_run_start_time.elapsed();
+    context.time_smt_run += smt_elapsed;
+    context.log_smt_response(smt_elapsed, &smt_output);
 
     #[derive(PartialEq, Eq)]
     enum SmtOutput {
@@ -279,7 +306,9 @@ pub(crate) fn smt_check_assertion<'ctx>(
         SmtOutput::Unknown => {
             context.smt_log.log_get_info("reason-unknown");
             let smt_data = context.smt_log.take_pipe_data();
+            let t0 = Instant::now();
             let smt_output = context.get_smt_process().send_commands(smt_data);
+            context.log_smt_response(t0.elapsed(), &smt_output);
 
             #[derive(PartialEq, Eq)]
             enum SmtReasonUnknown {
@@ -335,7 +364,9 @@ pub(crate) fn smt_check_assertion<'ctx>(
                 context.smt_log.log_word("get-unsat-core");
 
                 let smt_data = context.smt_log.take_pipe_data();
+                let t0 = Instant::now();
                 let smt_output = context.get_smt_process().send_commands(smt_data);
+                context.log_smt_response(t0.elapsed(), &smt_output);
 
                 let mut smt_output = smt_output.into_iter();
                 let unsat_core_str =
@@ -366,7 +397,9 @@ pub(crate) fn smt_get_rlimit_count(context: &mut Context) -> Result<u64, Validit
 
     context.smt_log.log_get_info("all-statistics");
     let smt_data = context.smt_log.take_pipe_data();
+    let t0 = Instant::now();
     let smt_output = context.get_smt_process().send_commands(smt_data);
+    context.log_smt_response(t0.elapsed(), &smt_output);
     let statistics = crate::parser::parse_sexpression(&smt_output);
     let stats_map = statistics
         .as_list()
@@ -407,10 +440,17 @@ fn smt_get_model(
     let mut discovered_assert_id: Option<Option<Arc<Vec<u64>>>> = None;
     let mut discovered_additional_info: Vec<ArcDynMessage> = Vec::new();
 
+    // Label the upcoming `(get-model)` call so the SMT tab has a visible
+    // marker for where the counterexample starts. The Z3 reply (the
+    // model) lands in the Z3 tab right after the op's banner, so
+    // readers can correlate by op.
+    context.smt_log.comment("counterexample model:");
     context.smt_log.log_word("get-model");
 
     let smt_data = context.smt_log.take_pipe_data();
+    let t0 = Instant::now();
     let smt_output = context.get_smt_process().send_commands(smt_data);
+    context.log_smt_response(t0.elapsed(), &smt_output);
 
     if smt_output.iter().any(|line| line.contains("model is not available")) {
         // when we don't use incremental solving, sometime the model is not available when the z3 result is unknown
@@ -514,6 +554,9 @@ pub(crate) fn smt_check_query<'ctx>(
     let mut axiom_infos: Vec<AxiomInfo> = Vec::new();
     let labeled_assertion = label_asserts(context, &mut infos, &mut axiom_infos, &assertion);
     for info in &infos {
+        if let Some(span) = context.message_interface.get_span_as_string(&info.error) {
+            context.smt_log.comment(span);
+        }
         context.smt_log.comment(&context.message_interface.get_note(&info.error));
         if let Err(err) = crate::typecheck::add_decl(context, &info.decl, false) {
             return ValidityResult::TypeError(err);

@@ -13,9 +13,9 @@ pub(crate) struct CrateMetadata {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct CrateWithMetadata {
-    krate: Krate,
-    metadata: CrateMetadata,
+pub struct CrateWithMetadata {
+    pub krate: Krate,
+    pub(crate) metadata: CrateMetadata,
 }
 
 pub(crate) struct ImportOutput {

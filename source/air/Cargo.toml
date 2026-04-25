@@ -18,6 +18,11 @@ yansi = "0.5"
 [target.'cfg(windows)'.dependencies]
 win32job = "1"
 
+# wasm32 has no subprocesses; the wasm SmtProcess shim calls a JS-side Z3 via
+# wasm-bindgen. Native builds do not pull this in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
 [features]
 singular = []
 

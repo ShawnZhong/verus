@@ -30,7 +30,9 @@ extern crate rustc_trait_selection;
 extern crate rustc_type_ir;
 
 mod attributes;
-mod buckets;
+// verus-explorer: needed for constructing a Bucket to drive OpGenerator from
+// the explorer crate. Upstream keeps it private.
+pub mod buckets;
 pub mod commands;
 pub mod config;
 
@@ -46,13 +48,13 @@ pub mod debugger;
 pub mod def;
 pub mod driver;
 pub mod erase;
-mod expand_errors_driver;
+pub mod expand_errors_driver;
 pub mod external;
 pub mod externs;
 pub mod file_loader;
 mod fn_call_to_vir;
 mod hir_hide_reveal_rewrite;
-mod import_export;
+pub mod import_export;
 pub mod profiler;
 mod resolve_traits;
 pub mod reveal_hide;
@@ -68,7 +70,9 @@ mod rust_to_vir_impl;
 pub mod rust_to_vir_trait;
 #[cfg(feature = "singular")]
 pub mod singular;
-mod spans;
+// verus-explorer: exposed so the explorer can import the `SpanContext`
+// returned by `Verifier::build_vir_crate`.
+pub mod spans;
 pub mod trait_check;
 mod trait_check_ast;
 mod trait_check_emit;

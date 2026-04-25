@@ -10,8 +10,14 @@ readme = "../../README.md"
 keywords = ["verus", "verified-rust", "verification"]
 categories = ["development-tools"]
 
-[lib]
-proc-macro = true
+# Regular library (not `proc-macro = true`). User-facing macros are exposed
+# via `pub macro NAME() {}` decl_macro stubs; consumers register the real
+# proc-macro descriptors (the `MACROS` slice in src/lib.rs) with the patched
+# `rustc_metadata::proc_macro_registry`, which swaps each stub's
+# `SyntaxExtensionKind` for a Bang/Attr/Derive wrapper at resolve time. This
+# lets the same crate serve both the host (rust_verify) and rustc-in-wasm
+# (verus-explorer), neither of which can dlopen a proc-macro dylib in its
+# registration context.
 
 [dependencies]
 proc-macro2 = "1.0.39"

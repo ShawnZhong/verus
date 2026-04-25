@@ -29,6 +29,10 @@ tag = "workspace"
 unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(verus_keep_ghost)',
   'cfg(verus_verify_core)',
+  # verus-explorer-specific: cfg-gates verus_builtin_macros and
+  # verus_state_machines_macros down to their `pub macro` shims for the
+  # bundled wasm32 sysroot rmetas.
+  'cfg(stub_only)',
 ] }
 
 [workspace.lints.clippy]

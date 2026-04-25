@@ -4,6 +4,7 @@ use rust_verify::util::{VerusBuildProfile, verus_build_info};
 
 extern crate rustc_driver;
 extern crate rustc_log;
+extern crate rustc_metadata;
 extern crate rustc_session;
 
 #[cfg(target_family = "windows")]
@@ -61,6 +62,20 @@ pub fn main() {
     let _ = os_setup();
     vir::util::set_verus_github_bug_report_url(
         ::rust_verify::consts::VERUS_GITHUB_BUG_REPORT_URL.to_owned(),
+    );
+    // verus_builtin_macros is now a regular rlib carrying `pub macro` stubs +
+    // a `MACROS` slice. Registering here lets the patched
+    // `rustc_resolve::build_reduced_graph::get_macro_by_def_id` swap each stub's
+    // `SyntaxExtensionKind` for the real Bang/Attr/Derive client at expansion
+    // time — the host can't emit `--crate-type=proc-macro` for wasm32, and this
+    // path is what both rust_verify and rustc-in-wasm share now.
+    rustc_metadata::proc_macro_registry::register(
+        "verus_builtin_macros",
+        verus_builtin_macros::MACROS,
+    );
+    rustc_metadata::proc_macro_registry::register(
+        "verus_state_machines_macros",
+        verus_state_machines_macros::MACROS,
     );
     let logger_handler =
         rustc_session::EarlyDiagCtxt::new(rustc_session::config::ErrorOutputType::default());

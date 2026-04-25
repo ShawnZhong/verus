@@ -12,6 +12,11 @@ pub trait MessageInterface {
     fn bare(&self, level: MessageLevel, notes: &str) -> ArcDynMessage;
     fn unexpected_z3_version(&self, expected: &str, found: &str) -> ArcDynMessage;
     fn get_note<'b>(&self, message: &'b ArcDynMessage) -> &'b str;
+    /// The message's primary span as a string, if it has one. Used by the
+    /// SMT-log emitter to prefix each labeled assertion with a
+    /// `;; file:line:col` comment so the explorer's span-link plugin can
+    /// surface it as a clickable jump-to-source target.
+    fn get_span_as_string<'b>(&self, message: &'b ArcDynMessage) -> Option<&'b str>;
     fn from_labels(&self, labels: &Vec<ArcDynMessageLabel>) -> ArcDynMessage;
     fn append_labels(
         &self,
@@ -19,6 +24,10 @@ pub trait MessageInterface {
         labels: &Vec<ArcDynMessageLabel>,
     ) -> ArcDynMessage;
     fn get_message_label_note<'b>(&self, message_label: &'b ArcDynMessageLabel) -> &'b str;
+    /// A message-label's span as a string. Counterpart to
+    /// `get_span_as_string` for `LabeledAxiom`, which carries a list of
+    /// `ArcDynMessageLabel` rather than a single message.
+    fn get_message_label_span_as_string<'b>(&self, message_label: &'b ArcDynMessageLabel) -> &'b str;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +117,11 @@ impl MessageInterface for AirMessageInterface {
         &message_label.note
     }
 
+    fn get_message_label_span_as_string<'b>(&self, message_label: &'b ArcDynMessageLabel) -> &'b str {
+        let message_label = message_label.downcast_ref::<AirMessageLabel>().unwrap();
+        &message_label.span.as_string
+    }
+
     fn append_labels(
         &self,
         message: &ArcDynMessage,
@@ -125,6 +139,11 @@ impl MessageInterface for AirMessageInterface {
     fn get_note<'b>(&self, message: &'b ArcDynMessage) -> &'b str {
         let message = message.downcast_ref::<AirMessage>().unwrap();
         &message.note
+    }
+
+    fn get_span_as_string<'b>(&self, message: &'b ArcDynMessage) -> Option<&'b str> {
+        let message = message.downcast_ref::<AirMessage>().unwrap();
+        message.span.as_ref().map(|s| s.as_string.as_str())
     }
 
     fn message_label_from_air_span(&self, air_span: &str, note: &str) -> ArcDynMessageLabel {

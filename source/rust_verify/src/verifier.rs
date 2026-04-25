@@ -34,13 +34,14 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use air::time::Instant;
+use std::time::Duration;
 use vir::context::{FuncCallGraphLogFiles, GlobalCtx};
 
 use crate::buckets::{Bucket, BucketId};
 use crate::expand_errors_driver::ExpandErrorsResult;
 use vir::ast::{Fun, Krate, VirErr};
-use vir::ast_util::{fun_as_friendly_rust_name, is_visible_to};
+use vir::ast_util::fun_as_friendly_rust_name;
 use vir::def::{
     CommandContext, CommandsWithContext, CommandsWithContextX, SnapPos, path_to_string,
 };
@@ -57,18 +58,30 @@ trait Diagnostics: air::messages::Diagnostics {
     fn complete_progress_bar(&self, ctx: CommandContext);
 }
 
-pub(crate) struct Reporter<'tcx> {
+// verus-explorer: made `pub` so the explorer can construct a Reporter that
+// routes VIR/AIR messages through rustc's `DiagCtxt` for spanned,
+// source-pointing error output.
+pub struct Reporter<'tcx> {
     spans: SpanContext,
     compiler_diagnostics: &'tcx rustc_errors::DiagCtxt,
     source_map: &'tcx rustc_span::source_map::SourceMap,
+    // verus-explorer: expand-errors emits a "diagnostics via expansion" Note
+    // whose VIR `Message` only carries spans for *expanded* sub-asserts
+    // (see `expand_errors_driver.rs:167` — `assert_id.len() > 1` guard).
+    // When the failing assertion is atomic, that Vec is empty and the Note
+    // renders header-only (no `-->`, no source line). We remember the most
+    // recently emitted Error's MultiSpan and fall back to it here so the
+    // follow-up Note lands on the same assertion line in the UI.
+    last_error_span: std::cell::RefCell<Option<MultiSpan>>,
 }
 
 impl<'tcx> Reporter<'tcx> {
-    pub(crate) fn new(spans: &SpanContext, compiler: &'tcx Compiler) -> Self {
+    pub fn new(spans: &SpanContext, compiler: &'tcx Compiler) -> Self {
         Reporter {
             spans: spans.clone(),
             compiler_diagnostics: &compiler.sess.dcx(),
             source_map: compiler.sess.source_map(),
+            last_error_span: std::cell::RefCell::new(None),
         }
     }
 }
@@ -94,6 +107,24 @@ impl air::messages::Diagnostics for Reporter<'_> {
 
         let mut multispan = MultiSpan::from_spans(v);
 
+        // verus-explorer: if this is an expand-errors Note with no real
+        // span of its own, inherit the most recent Error's span so the UI
+        // can anchor the note to a source line. We only do this when the
+        // message carries a fancy_note — that's the marker that this is
+        // an expand-errors "diagnostics via expansion" note rather than a
+        // general-purpose Verus note.
+        if matches!(level, MessageLevel::Note)
+            && msg.fancy_note.is_some()
+            && multispan.primary_span().is_none()
+        {
+            if let Some(prev) = self.last_error_span.borrow().clone() {
+                multispan = prev;
+            }
+        }
+        if matches!(level, MessageLevel::Error) {
+            *self.last_error_span.borrow_mut() = Some(multispan.clone());
+        }
+
         let mut replacement_error_note: Option<String> = None;
         for MessageLabel { note, span: sp, is_proof_note, is_custom_err } in &msg.labels {
             let span = self.spans.from_air_span(&sp, Some(self.source_map));
@@ -116,10 +147,28 @@ impl air::messages::Diagnostics for Reporter<'_> {
             mut diag: Diag<'a, G>,
             multispan: MultiSpan,
             help: &Option<String>,
+            fancy_note: &Option<String>,
         ) {
             diag.span = multispan;
             if let Some(help) = help {
                 diag.help(help.clone());
+            }
+            // verus-explorer: attach the expand-errors body as a sub-note of
+            // the primary diagnostic so it inherits the assertion's span.
+            // Upstream emits this via `eprintln!` to preserve ANSI colors the
+            // rustc emitter would strip — fine on a TTY, but in the browser
+            // stderr isn't wired to DomWriter, so the body would vanish. Going
+            // through `.note(...)` instead gives us one span-carrying
+            // diagnostic that the DomWriter path can render.
+            //
+            // `expand_errors_driver` prefixes the body with `\n\n` (intended
+            // for the terminal-print path). DomWriter in `src/lib.rs` uses
+            // `\n\n` as its diagnostic-block separator, so any internal blank
+            // line truncates the block and desyncs every diag that follows —
+            // that's what swallows the note AND collapses subsequent errors.
+            // Strip leading whitespace before handing to `.note()`.
+            if let Some(fancy_note) = fancy_note {
+                diag.note(fancy_note.trim_start().to_string());
             }
             diag.emit();
         }
@@ -129,11 +178,13 @@ impl air::messages::Diagnostics for Reporter<'_> {
                 self.compiler_diagnostics.handle().struct_note(msg.note.clone()),
                 multispan,
                 &msg.help,
+                &msg.fancy_note,
             ),
             MessageLevel::Warning => emit_with_diagnostic_details(
                 self.compiler_diagnostics.handle().struct_warn(msg.note.clone()),
                 multispan,
                 &msg.help,
+                &msg.fancy_note,
             ),
             MessageLevel::Error => emit_with_diagnostic_details(
                 self.compiler_diagnostics
@@ -141,13 +192,8 @@ impl air::messages::Diagnostics for Reporter<'_> {
                     .struct_err(replacement_error_note.clone().unwrap_or_else(|| msg.note.clone())),
                 multispan,
                 &msg.help,
+                &msg.fancy_note,
             ),
-        }
-
-        if let Some(fancy_note) = &msg.fancy_note {
-            // The fancy_note might use terminal colors, which will get escaped if we use
-            // the Rust emitter. Thus, we have to emit this note out-of-band.
-            eprintln!("{:}{:}", console::style("note: ").bright().blue(), fancy_note);
         }
     }
 
@@ -334,10 +380,15 @@ pub struct Verifier {
     // If we've already created the log directory, this is the path to it:
     created_log_dir: Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     created_solver_log_dir: Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
-    vir_crate: Option<Krate>,
+    // verus-explorer: read after `build_vir_crate` returns to dump
+    // VIR_RAW (pre-`ast_simplify::simplify_krate`).
+    pub vir_crate: Option<Krate>,
     crate_name: Option<String>,
     crate_names: Option<Vec<String>>,
-    air_no_span: Option<vir::messages::Span>,
+    // verus-explorer: read after `build_vir_crate` to feed `GlobalCtx::new`
+    // from the explorer's `verus.rs`, replacing the GlobalCtx setup that
+    // used to live inside `build_vir_crate`.
+    pub air_no_span: Option<vir::messages::Span>,
     current_crate_modules: Option<Vec<vir::ast::Module>>,
     crate_items: Option<Arc<crate::external::CrateItems>>,
     buckets: HashMap<BucketId, Bucket>,
@@ -397,6 +448,39 @@ pub(crate) fn io_vir_err(msg: String, err: std::io::Error) -> VirErr {
 
 pub fn module_name(module: &vir::ast::Path) -> String {
     module.segments.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("::")
+}
+
+/// The batches of commands that make up the per-bucket AIR preamble
+/// (everything fed before the function-decl loop). Built by
+/// `Verifier::build_bucket_preamble`; consumed by iterating
+/// `batches()` (to feed each batch to `air::Context`) and/or by
+/// destructuring named fields (for `new_air_context_with_bucket_context`'s
+/// spinoff path, which only needs five of them).
+pub struct BucketPreamble {
+    pub fuel: air::ast::Commands,
+    pub trait_decls: air::ast::Commands,
+    pub assoc_type_decls: air::ast::Commands,
+    pub datatypes: air::ast::Commands,
+    pub trait_bounds: air::ast::Commands,
+    pub assoc_type_impls: air::ast::Commands,
+    pub opaque_types: air::ast::Commands,
+}
+
+impl BucketPreamble {
+    /// Iterate the batches in the order verify_bucket fed them (matters
+    /// for AIR log legibility and E-matching determinism).
+    pub fn batches(&self) -> impl Iterator<Item = (&air::ast::Commands, &'static str)> {
+        [
+            (&self.fuel, "Fuel"),
+            (&self.trait_decls, "Trait-Decls"),
+            (&self.assoc_type_decls, "Associated-Type-Decls"),
+            (&self.datatypes, "Datatypes"),
+            (&self.trait_bounds, "Trait-Bounds"),
+            (&self.assoc_type_impls, "Associated-Type-Impls"),
+            (&self.opaque_types, "Opaque-Type-Constructors"),
+        ]
+        .into_iter()
+    }
 }
 
 mod util {
@@ -1329,6 +1413,38 @@ impl Verifier {
         Ok(air_context)
     }
 
+    /// Build the per-bucket AIR preamble's non-function-decl portion.
+    /// Pure builder — no feeding, no side effects. Callers iterate
+    /// `preamble.batches()` to feed. Shared by `verify_bucket` below
+    /// and library-mode consumers (e.g. the verus-explorer); the
+    /// function-declaration loop intentionally stays with each caller
+    /// because `verify_bucket` threads per-function proof-note
+    /// bookkeeping through its loop that library users don't share.
+    pub fn build_bucket_preamble(
+        ctx: &mut vir::context::Ctx,
+        krate: &vir::sst::KrateSst,
+        module: &vir::ast::Path,
+    ) -> BucketPreamble {
+        let visible_dts: Vec<_> = krate
+            .datatypes
+            .iter()
+            .filter(|d| vir::ast_util::is_visible_to(&d.x.visibility, module))
+            .cloned()
+            .collect();
+        BucketPreamble {
+            fuel: ctx.fuel(),
+            trait_decls: vir::traits::trait_decls_to_air(ctx, krate),
+            assoc_type_decls: vir::assoc_types_to_air::assoc_type_decls_to_air(ctx, &krate.traits),
+            datatypes: vir::datatype_to_air::datatypes_and_primitives_to_air(ctx, &visible_dts),
+            trait_bounds: vir::traits::trait_bound_axioms(ctx, &krate.traits),
+            assoc_type_impls: vir::assoc_types_to_air::assoc_type_impls_to_air(
+                ctx,
+                &krate.assoc_type_impls,
+            ),
+            opaque_types: vir::opaque_type_to_air::opaque_types_to_air(ctx, &krate.opaque_types),
+        }
+    }
+
     // Verify a single bucket
     fn verify_bucket(
         &mut self,
@@ -1390,65 +1506,23 @@ impl Verifier {
             ));
         }
 
-        let trait_decl_commands = vir::traits::trait_decls_to_air(ctx, &krate);
-        self.run_commands(
-            bucket_id,
-            reporter,
-            &mut air_context,
-            &trait_decl_commands,
-            "Trait-Decls",
-        );
-
-        let assoc_type_decl_commands =
-            vir::assoc_types_to_air::assoc_type_decls_to_air(ctx, &krate.traits);
-        self.run_commands(
-            bucket_id,
-            reporter,
-            &mut air_context,
-            &assoc_type_decl_commands,
-            "Associated-Type-Decls",
-        );
-
-        let datatype_commands = vir::datatype_to_air::datatypes_and_primitives_to_air(
-            ctx,
-            &krate
-                .datatypes
-                .iter()
-                .filter(|d| is_visible_to(&d.x.visibility, module))
-                .cloned()
-                .collect(),
-        );
-        self.run_commands(bucket_id, reporter, &mut air_context, &datatype_commands, "Datatypes");
-
-        let trait_type_bounds_commands = vir::traits::trait_bound_axioms(ctx, &krate.traits);
-        self.run_commands(
-            bucket_id,
-            reporter,
-            &mut air_context,
-            &trait_type_bounds_commands,
-            "Trait-Bounds",
-        );
-
-        let assoc_type_impl_commands =
-            vir::assoc_types_to_air::assoc_type_impls_to_air(ctx, &krate.assoc_type_impls);
-        self.run_commands(
-            bucket_id,
-            reporter,
-            &mut air_context,
-            &assoc_type_impl_commands,
-            "Associated-Type-Impls",
-        );
-
-        // Declare opaque type defs
-        let opaque_type_impl_commands =
-            vir::opaque_type_to_air::opaque_types_to_air(ctx, &krate.opaque_types);
-        self.run_commands(
-            bucket_id,
-            reporter,
-            &mut air_context,
-            &opaque_type_impl_commands,
-            "Opaque-Type-Constructors",
-        );
+        // Build the preamble (pure — no feeding yet), then feed each batch
+        // via `self.run_commands` — same as the old inline code, just looped
+        // over a named iterator. The shared `BucketPreamble` keeps the
+        // preamble sequence lock-step with library-mode consumers (e.g. the
+        // verus-explorer). Named fields below are used by the spinoff path.
+        let preamble = Self::build_bucket_preamble(ctx, &krate, module);
+        for (commands, comment) in preamble.batches() {
+            self.run_commands(bucket_id, reporter, &mut air_context, commands, comment);
+        }
+        let BucketPreamble {
+            trait_decls: trait_decl_commands,
+            datatypes: datatype_commands,
+            assoc_type_decls: assoc_type_decl_commands,
+            trait_bounds: trait_type_bounds_commands,
+            assoc_type_impls: assoc_type_impl_commands,
+            ..
+        } = preamble;
 
         let mut function_decl_commands = vec![];
 
@@ -2653,7 +2727,10 @@ impl Verifier {
         result
     }
 
-    fn construct_vir_crate<'tcx>(
+    // verus-explorer: made `pub` so the explorer's `verus.rs` can drive
+    // HIR → raw VIR directly, replacing the `build_vir_crate` wrapper
+    // that used to live in this file.
+    pub fn construct_vir_crate<'tcx>(
         &mut self,
         tcx: TyCtxt<'tcx>,
         verus_items: Arc<VerusItems>,

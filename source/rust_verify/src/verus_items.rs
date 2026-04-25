@@ -713,12 +713,16 @@ fn verus_items_map() -> Vec<(&'static str, VerusItem)> {
     ]
 }
 
-pub(crate) struct VerusItems {
+// verus-explorer: made `pub` so the explorer can build a `VerusItems`
+// + pass `Arc<VerusItems>` straight into `Verifier::construct_vir_crate`,
+// replacing the `build_vir_crate` wrapper that used to do this internally.
+pub struct VerusItems {
     pub(crate) id_to_name: HashMap<DefId, VerusItem>,
     pub(crate) name_to_id: HashMap<VerusItem, DefId>,
 }
 
-pub(crate) fn from_diagnostic_items(
+// verus-explorer: see comment on `VerusItems` above.
+pub fn from_diagnostic_items(
     diagnostic_items: &rustc_hir::diagnostic_items::DiagnosticItems,
 ) -> VerusItems {
     let verus_item_map: HashMap<&str, VerusItem> =

@@ -16,6 +16,14 @@ mod lib_exe_names {
     pub const LIB_DL: &str = "dll";
 }
 
+// verus-explorer: wasm32 never loads native dylibs for externs, but the
+// constants must still resolve at compile time.
+#[cfg(target_arch = "wasm32")]
+mod lib_exe_names {
+    pub const LIB_PRE: &str = "lib";
+    pub const LIB_DL: &str = "rlib";
+}
+
 use lib_exe_names::{LIB_DL, LIB_PRE};
 
 #[derive(Debug)]

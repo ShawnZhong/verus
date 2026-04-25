@@ -141,10 +141,22 @@ impl air::messages::MessageInterface for VirMessageInterface {
         &message.note
     }
 
+    fn get_span_as_string<'b>(&self, message: &'b ArcDynMessage) -> Option<&'b str> {
+        let message: &MessageX =
+            message.downcast_ref().expect("unexpected value in Any -> Message conversion");
+        message.spans.first().map(|s| s.as_string.as_str())
+    }
+
     fn get_message_label_note<'b>(&self, message_label: &'b ArcDynMessageLabel) -> &'b str {
         let message_label: &MessageLabel =
             message_label.downcast_ref().expect("unexpected value in Any -> Message conversion");
         &message_label.note
+    }
+
+    fn get_message_label_span_as_string<'b>(&self, message_label: &'b ArcDynMessageLabel) -> &'b str {
+        let message_label: &MessageLabel =
+            message_label.downcast_ref().expect("unexpected value in Any -> Message conversion");
+        &message_label.span.as_string
     }
 
     fn append_labels(

@@ -6,7 +6,8 @@ use rustc_hir::{Attribute, AttributeMap};
 use rustc_hir::{HirId, ItemKind, OwnerId, OwnerNode};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::{Span, sym};
-use std::time::{Duration, Instant};
+use air::time::Instant;
+use std::time::Duration;
 
 struct DefaultCallbacks;
 impl rustc_driver::Callbacks for DefaultCallbacks {}

@@ -414,9 +414,17 @@ impl Printer {
                 }
             }
             ExprX::LabeledAxiom(labels, filter, expr) => {
-                let spans = vec_map(labels, |s| {
-                    Node::Atom(format!("\"{}\"", self.message_interface.get_message_label_note(s)))
-                });
+                // Prepend each label's span string to the emitted atoms so the
+                // explorer's span-link plugin finds `input.rs:L:C` in the AIR
+                // log tree. The parser re-ingests these as extra labels (via
+                // `message_label_from_air_span`) — harmless since the AIR log
+                // is display-only (`log_query` goes to `*_log` files, not
+                // the live verification path).
+                let mut spans: Vec<Node> = Vec::new();
+                for s in labels.iter() {
+                    spans.push(Node::Atom(format!("\"{}\"", self.message_interface.get_message_label_span_as_string(s))));
+                    spans.push(Node::Atom(format!("\"{}\"", self.message_interface.get_message_label_note(s))));
+                }
                 if spans.len() == 0 && filter.is_none() {
                     self.expr_to_node(expr)
                 } else {
@@ -425,9 +433,16 @@ impl Printer {
                 }
             }
             ExprX::LabeledAssertion(_, error, filter, expr) => {
-                let spans = vec_map(&self.message_interface.all_msgs(error), |s| {
+                // Same as LabeledAxiom above — prepend the message's span
+                // string so the explorer can link AIR-tab assertions back
+                // to source.
+                let mut spans: Vec<Node> = Vec::new();
+                if let Some(s) = self.message_interface.get_span_as_string(error) {
+                    spans.push(Node::Atom(format!("\"{}\"", s)));
+                }
+                spans.extend(vec_map(&self.message_interface.all_msgs(error), |s| {
                     Node::Atom(format!("\"{}\"", s))
-                });
+                }));
                 if spans.len() == 0 && filter.is_none() {
                     self.expr_to_node(expr)
                 } else {
@@ -528,9 +543,18 @@ impl Printer {
         match &**stmt {
             StmtX::Assume(expr) => nodes!(assume {self.expr_to_node(expr)}),
             StmtX::Assert(_, labels, filter, expr) => {
-                let spans = vec_map(&self.message_interface.all_msgs(labels), |s| {
+                // AIR_INITIAL / AIR_MIDDLE tabs: prepend the message's span
+                // string so the explorer's span-link plugin finds
+                // `input.rs:L:C` in the assert wrapper. Mirrors the
+                // `LabeledAssertion` patch below (which covers AIR_FINAL
+                // after `block_to_assert`).
+                let mut spans: Vec<Node> = Vec::new();
+                if let Some(s) = self.message_interface.get_span_as_string(labels) {
+                    spans.push(Node::Atom(format!("\"{}\"", s)));
+                }
+                spans.extend(vec_map(&self.message_interface.all_msgs(labels), |s| {
                     Node::Atom(format!("\"{}\"", s))
-                });
+                }));
                 if spans.len() == 0 && filter.is_none() {
                     nodes!(assert {self.expr_to_node(expr)})
                 } else {

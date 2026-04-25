@@ -1,7 +1,7 @@
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::StableCrateId;
 use rustc_span::source_map::SourceMap;
-use rustc_span::{BytePos, ExternalSource, FileName, Span, SpanData};
+use rustc_span::{BytePos, ExternalSource, FileName, RemapPathScopeComponents, Span, SpanData};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -56,8 +56,10 @@ struct CrateInfo {
     files: Vec<ExternSourceFile>,
 }
 
+// verus-explorer: made `pub` because it appears in `SpanContextX::new`'s
+// signature, which is also `pub` for the explorer's use.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct FileStartEndPos {
+pub struct FileStartEndPos {
     // In case SourceMap doesn't load the file itself,
     // as a backup we can try to ask SourceMap to load from filename
     // (this is optional; it's ok if the filename is None):
@@ -67,8 +69,11 @@ pub(crate) struct FileStartEndPos {
     end_pos: u32,
 }
 
-pub(crate) type SpanContext = Arc<SpanContextX>;
-pub(crate) struct SpanContextX {
+// verus-explorer: made `pub` so the explorer can hand the SpanContext
+// returned by `Verifier::build_vir_crate` to a `Reporter::new` call from
+// outside this crate.
+pub type SpanContext = Arc<SpanContextX>;
+pub struct SpanContextX {
     pub(crate) local_crate: StableCrateId,
     // Map StableCrateId.to_u64() to CrateInfo
     imported_crates: HashMap<u64, CrateInfo>,
@@ -77,7 +82,9 @@ pub(crate) struct SpanContextX {
 }
 
 impl SpanContextX {
-    pub(crate) fn new(
+    // verus-explorer: made `pub` so the explorer's `verus.rs` can build a
+    // `SpanContext` directly when driving the HIR → VIR pipeline itself.
+    pub fn new(
         tcx: TyCtxt,
         local_crate: StableCrateId,
         source_map: &SourceMap,
@@ -92,10 +99,20 @@ impl SpanContextX {
         for source_file in source_map.files().iter() {
             match *source_file.external_src.borrow() {
                 ExternalSource::Unneeded => {
+                    // verus-explorer: return the scope-remapped path (what
+                    // `--remap-path-prefix` rewrote under DIAGNOSTICS) rather
+                    // than canonicalizing the local path, so absolute developer
+                    // paths don't get baked into exported `.vir` files.
+                    // `load_file(...)` at line 243 is a best-effort fallback
+                    // that's silently ignored on failure, so relative paths
+                    // that the consumer can't locate simply skip the source-
+                    // quote step.
                     let filename = match &source_file.name {
-                        FileName::Real(real_file_name) => {
-                            real_file_name.local_path().and_then(|path| path.canonicalize().ok())
-                        }
+                        FileName::Real(real_file_name) => Some(
+                            real_file_name
+                                .path(RemapPathScopeComponents::DIAGNOSTICS)
+                                .to_path_buf(),
+                        ),
                         _ => None,
                     };
                     let pos = FileStartEndPos {

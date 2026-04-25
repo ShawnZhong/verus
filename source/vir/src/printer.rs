@@ -2,6 +2,7 @@ use crate::ast::*;
 use air::printer::macro_push_node;
 use air::{node, nodes};
 use sise::Node;
+use std::sync::Arc;
 
 const VIR_BREAK_ON: &[&str] = &["Function"];
 const VIR_BREAK_AFTER: &[&str] =
@@ -380,7 +381,7 @@ impl<K: ToDebugSNode, V: ToDebugSNode> ToDebugSNode for indexmap::IndexMap<K, V>
     }
 }
 
-fn path_to_node(path: &Path) -> Node {
+pub(crate) fn path_to_node(path: &Path) -> Node {
     Node::Atom(format!(
         "\"{}\"",
         crate::def::path_to_string(path).replace("{", "_$LBRACE_").replace("}", "_$RBRACE_")
@@ -393,146 +394,227 @@ impl ToDebugSNode for Path {
     }
 }
 
-pub fn write_krate(mut write: impl std::io::Write, vir_crate: &Krate, opts: &ToDebugSNodeOpts) {
-    let mut nw = NodeWriter::new_vir();
-
-    let KrateX {
-        datatypes,
-        opaque_types: _,
-        functions,
-        reveal_groups,
-        traits,
-        trait_impls,
-        assoc_type_impls,
-        modules,
-        external_fns,
-        external_types,
-        path_as_rust_names: _,
-        arch,
-    } = &**vir_crate;
-    for datatype in datatypes.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &datatype.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        writeln!(&mut write, "{}\n", nw.node_to_string(&datatype.to_node(opts)))
-            .expect("cannot write to vir write");
-    }
-    for function in functions.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &function.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        writeln!(&mut write, "{}\n", nw.node_to_string(&function.to_node(opts)))
-            .expect("cannot write to vir write");
-    }
-    for group in reveal_groups.iter() {
-        let group_id_node = nodes!(group_id {path_to_node(&group.x.name.path)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&group_id_node))
-            .expect("cannot write to vir write");
-    }
-    for t in traits.iter() {
-        let t = nodes!(trait {path_to_node(&t.x.name)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&t)).expect("cannot write to vir write");
-    }
-    for t in trait_impls.iter() {
-        let t = nodes!(trait_impl {path_to_node(&t.x.impl_path)} {path_to_node(&t.x.trait_path)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&t)).expect("cannot write to vir write");
-    }
-    for assoc in assoc_type_impls.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &assoc.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        writeln!(&mut write, "{}\n", nw.node_to_string(&assoc.to_node(opts)))
-            .expect("cannot write to vir write");
-    }
-    for module in modules.iter() {
-        let module_id_node = nodes!(module_id {path_to_node(&module.x.path)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&module_id_node))
-            .expect("cannot write to vir write");
-    }
-    for external_fn in external_fns.iter() {
-        let external_fn_node = nodes!(external_fn {external_fn.to_node(opts)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&external_fn_node))
-            .expect("cannot write to vir write");
-    }
-    for external_type in external_types.iter() {
-        let external_type_node = nodes!(external_type {path_to_node(external_type)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&external_type_node))
-            .expect("cannot write to vir write");
-    }
-    let arch_nodes = nodes!(arch_word_bits {arch.word_bits.to_node(opts)});
-    writeln!(&mut write, "{}\n", nw.node_to_string(&arch_nodes))
-        .expect("cannot write to vir write");
+// Events produced by `walk_krate` / `walk_krate_sst`. The walkers own all
+// node-construction logic; callers only decide how to format each event
+// (write to an `io::Write`, accumulate into `Vec<Block>`, etc.).
+//
+// `krate` is `None` for items defined in the local crate and `Some(name)`
+// for external crate items — lets the explorer fold vstd/builtin items
+// without re-deriving that per section.
+// verus-explorer: `kind` + `name` give downstream consumers enough
+// to render a per-item banner like `fn crate::main <input.rs>:5:6:
+// 5:35 (#0)` without re-parsing the SMT-like text payload. `kind`
+// is one of "fn" / "datatype" / "trait" / "trait_impl" /
+// "assoc_type" / "module" / "reveal_group" / "external_fn" /
+// "external_type" / "arch".
+pub struct WalkItem<'a> {
+    pub kind: &'static str,
+    pub name: String,
+    pub krate: Option<Arc<String>>,
+    pub span: &'a str,
+    pub text: String,
 }
 
-pub fn write_krate_sst(
-    mut write: impl std::io::Write,
-    sst_crate: &crate::sst::KrateSst,
-    opts: &ToDebugSNodeOpts,
-) {
+pub fn walk_krate(vir_crate: &Krate, opts: &ToDebugSNodeOpts, mut visit: impl FnMut(WalkItem<'_>)) {
+    use crate::ast_util::{dt_as_friendly_rust_name, fun_as_friendly_rust_name, path_as_friendly_rust_name};
     let mut nw = NodeWriter::new_vir();
+    if !vir_crate.datatypes.is_empty() {
+        for d in vir_crate.datatypes.iter() {
+            let krate = match &d.x.name { Dt::Path(p) => p.krate.clone(), Dt::Tuple(_) => None };
+            visit(WalkItem {
+                kind: "datatype",
+                name: dt_as_friendly_rust_name(&d.x.name),
+                krate, span: &d.span.as_string,
+                text: nw.node_to_string(&d.to_node(opts)),
+            });
+        }
+    }
+    if !vir_crate.functions.is_empty() {
+        for f in vir_crate.functions.iter() {
+            visit(WalkItem {
+                kind: "fn",
+                name: fun_as_friendly_rust_name(&f.x.name),
+                krate: f.x.name.path.krate.clone(), span: &f.span.as_string,
+                text: nw.node_to_string(&f.to_node(opts)),
+            });
+        }
+    }
+    if !vir_crate.reveal_groups.is_empty() {
+        for g in vir_crate.reveal_groups.iter() {
+            let node = nodes!(group_id {path_to_node(&g.x.name.path)});
+            visit(WalkItem {
+                kind: "reveal_group",
+                name: path_as_friendly_rust_name(&g.x.name.path),
+                krate: g.x.name.path.krate.clone(), span: "",
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !vir_crate.traits.is_empty() {
+        for t in vir_crate.traits.iter() {
+            let node = nodes!(trait {path_to_node(&t.x.name)});
+            visit(WalkItem {
+                kind: "trait",
+                name: path_as_friendly_rust_name(&t.x.name),
+                krate: t.x.name.krate.clone(), span: "",
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !vir_crate.trait_impls.is_empty() {
+        for t in vir_crate.trait_impls.iter() {
+            let node = nodes!(trait_impl {path_to_node(&t.x.impl_path)} {path_to_node(&t.x.trait_path)});
+            visit(WalkItem {
+                kind: "trait_impl",
+                name: format!("{} for {}",
+                    path_as_friendly_rust_name(&t.x.trait_path),
+                    path_as_friendly_rust_name(&t.x.impl_path),
+                ),
+                krate: t.x.impl_path.krate.clone(), span: "",
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !vir_crate.assoc_type_impls.is_empty() {
+        for a in vir_crate.assoc_type_impls.iter() {
+            visit(WalkItem {
+                kind: "assoc_type",
+                name: format!("{}::{}", path_as_friendly_rust_name(&a.x.impl_path), a.x.name),
+                krate: a.x.impl_path.krate.clone(), span: &a.span.as_string,
+                text: nw.node_to_string(&a.to_node(opts)),
+            });
+        }
+    }
+    if !vir_crate.modules.is_empty() {
+        for m in vir_crate.modules.iter() {
+            let node = nodes!(module_id {path_to_node(&m.x.path)});
+            visit(WalkItem {
+                kind: "module",
+                name: path_as_friendly_rust_name(&m.x.path),
+                krate: m.x.path.krate.clone(), span: "",
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !vir_crate.external_fns.is_empty() {
+        for ef in vir_crate.external_fns.iter() {
+            let node = nodes!(external_fn {ef.to_node(opts)});
+            visit(WalkItem {
+                kind: "external_fn",
+                name: path_as_friendly_rust_name(&ef.path),
+                krate: ef.path.krate.clone(), span: "",
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !vir_crate.external_types.is_empty() {
+        for et in vir_crate.external_types.iter() {
+            let node = nodes!(external_type {path_to_node(et)});
+            visit(WalkItem {
+                kind: "external_type",
+                name: path_as_friendly_rust_name(et),
+                krate: et.krate.clone(), span: "",
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    let arch_node = nodes!(arch_word_bits {vir_crate.arch.word_bits.to_node(opts)});
+    visit(WalkItem {
+        kind: "arch",
+        name: "word_bits".to_string(),
+        krate: None, span: "",
+        text: nw.node_to_string(&arch_node),
+    });
+}
 
-    let crate::sst::KrateSstX {
-        functions,
-        datatypes,
-        opaque_types: _,
-        traits,
-        trait_impls,
-        assoc_type_impls,
-        reveal_groups,
-    } = &**sst_crate;
+pub fn walk_krate_sst(sst_crate: &crate::sst::KrateSst, opts: &ToDebugSNodeOpts, mut visit: impl FnMut(WalkItem<'_>)) {
+    use crate::ast_util::{dt_as_friendly_rust_name, fun_as_friendly_rust_name, path_as_friendly_rust_name};
+    let mut nw = NodeWriter::new_vir();
+    if !sst_crate.datatypes.is_empty() {
+        for d in sst_crate.datatypes.iter() {
+            let krate = match &d.x.name { Dt::Path(p) => p.krate.clone(), Dt::Tuple(_) => None };
+            visit(WalkItem {
+                kind: "datatype",
+                name: dt_as_friendly_rust_name(&d.x.name),
+                krate, span: &d.span.as_string,
+                text: nw.node_to_string(&d.to_node(opts)),
+            });
+        }
+    }
+    if !sst_crate.functions.is_empty() {
+        for f in sst_crate.functions.iter() {
+            visit(WalkItem {
+                kind: "fn",
+                name: fun_as_friendly_rust_name(&f.x.name),
+                krate: f.x.name.path.krate.clone(), span: &f.span.as_string,
+                text: nw.node_to_string(&f.to_node(opts)),
+            });
+        }
+    }
+    if !sst_crate.traits.is_empty() {
+        for t in sst_crate.traits.iter() {
+            let node = nodes!(trait {t.to_node(opts)});
+            visit(WalkItem {
+                kind: "trait",
+                name: path_as_friendly_rust_name(&t.x.name),
+                krate: t.x.name.krate.clone(), span: &t.span.as_string,
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !sst_crate.trait_impls.is_empty() {
+        for ti in sst_crate.trait_impls.iter() {
+            let node = nodes!(trait_impl {ti.to_node(opts)});
+            visit(WalkItem {
+                kind: "trait_impl",
+                name: format!("{} for {}",
+                    path_as_friendly_rust_name(&ti.x.trait_path),
+                    path_as_friendly_rust_name(&ti.x.impl_path),
+                ),
+                krate: ti.x.impl_path.krate.clone(), span: &ti.span.as_string,
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !sst_crate.assoc_type_impls.is_empty() {
+        for a in sst_crate.assoc_type_impls.iter() {
+            let node = nodes!(assoc_type_impl {a.to_node(opts)});
+            visit(WalkItem {
+                kind: "assoc_type",
+                name: format!("{}::{}", path_as_friendly_rust_name(&a.x.impl_path), a.x.name),
+                krate: a.x.impl_path.krate.clone(), span: &a.span.as_string,
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+    if !sst_crate.reveal_groups.is_empty() {
+        for g in sst_crate.reveal_groups.iter() {
+            let node = nodes!(group {g.to_node(opts)});
+            visit(WalkItem {
+                kind: "reveal_group",
+                name: path_as_friendly_rust_name(&g.x.name.path),
+                krate: g.x.name.path.krate.clone(), span: "",
+                text: nw.node_to_string(&node),
+            });
+        }
+    }
+}
 
-    for datatype in datatypes.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &datatype.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        writeln!(&mut write, "{}\n", nw.node_to_string(&datatype.to_node(opts)))
-            .expect("cannot write to vir write");
+fn write_item(w: &mut impl std::io::Write, no_span: bool, item: WalkItem<'_>) {
+    // Per-item header: `;; <kind> <name>` (plus span on the next
+    // line when `no_span` asks for it). Replaces the section-based
+    // layout the pre-walk-item printer used.
+    writeln!(w, ";; {} {}", item.kind, item.name).expect("cannot write to vir write");
+    if no_span && !item.span.is_empty() {
+        writeln!(w, ";; {}", item.span).expect("cannot write to vir write");
     }
-    for function in functions.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &function.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        writeln!(&mut write, "{}\n", nw.node_to_string(&function.to_node(opts)))
-            .expect("cannot write to vir write");
-    }
-    for trait_ in traits.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &trait_.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        let trait_node = Node::List(vec![Node::Atom("trait".to_owned()), trait_.to_node(opts)]);
-        writeln!(&mut write, "{}\n", nw.node_to_string(&trait_node))
-            .expect("cannot write to vir write");
-    }
-    writeln!(&mut write, ";; trait_impls").expect("cannot write to vir write");
-    for trait_impl in trait_impls.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &trait_impl.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        let trait_impl = nodes!(trait_impl {trait_impl.to_node(opts)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&trait_impl))
-            .expect("cannot write to vir write");
-    }
-    writeln!(&mut write, ";; assoc_type_impls").expect("cannot write to vir write");
-    for assoc in assoc_type_impls.iter() {
-        if opts.no_span {
-            writeln!(&mut write, ";; {}", &assoc.span.as_string)
-                .expect("cannot write to vir write");
-        }
-        let assoc_type_impl = nodes!(assoc_type_impl {assoc.to_node(opts)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&assoc_type_impl))
-            .expect("cannot write to vir write");
-    }
-    writeln!(&mut write, ";; reveal_groups").expect("cannot write to vir write");
-    for group in reveal_groups.iter() {
-        let group_node = nodes!(group {group.to_node(opts)});
-        writeln!(&mut write, "{}\n", nw.node_to_string(&group_node))
-            .expect("cannot write to vir write");
-    }
+    writeln!(w, "{}\n", item.text).expect("cannot write to vir write");
+}
+
+pub fn write_krate(mut write: impl std::io::Write, vir_crate: &Krate, opts: &ToDebugSNodeOpts) {
+    walk_krate(vir_crate, opts, |item| write_item(&mut write, opts.no_span, item));
+}
+
+pub fn write_krate_sst(mut write: impl std::io::Write, sst_crate: &crate::sst::KrateSst, opts: &ToDebugSNodeOpts) {
+    walk_krate_sst(sst_crate, opts, |item| write_item(&mut write, opts.no_span, item));
 }

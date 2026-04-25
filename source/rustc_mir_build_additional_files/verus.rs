@@ -105,8 +105,12 @@ static VERUS_AWARE_DEF_IDS: RwLock<Option<Arc<HashSet<LocalDefId>>>> = RwLock::n
 /// Used to communicate the VerusErasureCtxt
 static VERUS_ERASURE_CTXT: RwLock<Option<Arc<VerusErasureCtxt>>> = RwLock::new(None);
 
+// verus-explorer: on wasm32 the rustc module persists across `parse_source`
+// calls, so the upstream `panic!(… already been set)` would trip on the
+// second invocation. Gate the check to host only — overwrite on wasm.
 pub fn set_verus_aware_def_ids(ids: Arc<HashSet<LocalDefId>>) {
     let v: &mut Option<Arc<HashSet<LocalDefId>>> = &mut VERUS_AWARE_DEF_IDS.write().unwrap();
+    #[cfg(not(target_arch = "wasm32"))]
     if v.is_some() {
         panic!("VERUS_AWARE_DEF_IDS has already been set");
     }
@@ -115,6 +119,7 @@ pub fn set_verus_aware_def_ids(ids: Arc<HashSet<LocalDefId>>) {
 
 pub fn set_verus_erasure_ctxt(erasure_ctxt: Arc<VerusErasureCtxt>) {
     let v: &mut Option<Arc<VerusErasureCtxt>> = &mut VERUS_ERASURE_CTXT.write().unwrap();
+    #[cfg(not(target_arch = "wasm32"))]
     if v.is_some() {
         panic!("VERUS_ERASURE_CTXT has already been set");
     }

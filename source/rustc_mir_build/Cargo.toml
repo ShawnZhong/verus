@@ -1,5 +1,16 @@
 [package]
-name = "rustc_mir_build"
+# Renamed from "rustc_mir_build" to disambiguate from upstream's
+# rustc_mir_build (built into wasm32 rlibs by the explorer's rustc-rlibs
+# crate) — Cargo can't have two path-based packages with the same name in
+# one workspace's lockfile. The new name has *no* `rustc_` prefix and is
+# exactly `mir_build` so that rustc_fluent_macro's `fluent_messages!` check
+# (which strips `rustc_` from `CARGO_CRATE_NAME` and demands `.ftl` slugs
+# start with `<remainder>_`) sees `mir_build_` — matching every slug in
+# this fork unchanged. Picking `mir_build_verus` instead would have flipped
+# the prefix to `mir_build_verus_` and broken every diagnostic.
+# rust_verify/Cargo.toml aliases this back to `rustc_mir_build_verus` for
+# source-level imports.
+name = "mir_build"
 version = "0.0.0"
 edition = "2024"
 
@@ -8,6 +19,19 @@ edition = "2024"
 itertools = "0.12"
 tracing = "0.1"
 # tidy-alphabetical-end
+
+# Upstream rustc_mir_build declares all of its `rustc_*` deps directly;
+# Verus's fork strips them and relies on Verus's own workspace wiring to
+# supply `--extern` for each. In this crate's explorer context the rustc_*
+# crates are produced as wasm32 rlibs by the `rustc-rlibs` crate, resolved
+# via `-L` in `.cargo/config.toml`. Declaring rustc-rlibs here (rather than
+# re-listing 17 rustc_* deps and risking merge conflicts) gives Cargo the
+# ordering signal it needs: rustc-rlibs and every rustc_* rlib are built
+# before mir_build, so mir_build's undeclared `extern crate rustc_*;`
+# lookups find them in `target/.../deps/`. Without this edge Cargo runs
+# mir_build in parallel with its transitive compiler crates and its
+# extern-crate lookups fail with E0463.
+rustc-rlibs = { path = "../../../../rustc-rlibs" }
 
 [lints.clippy]
 # rustc_mir_build is forked from other code, we don't want lints here

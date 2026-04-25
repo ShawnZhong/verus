@@ -12,8 +12,11 @@ pub(crate) struct Emitter {
     node_writer: NodeWriter,
     /// buffer for data to be sent across pipe to Z3 process
     pipe_buffer: Option<Vec<u8>>,
-    /// log file
+    /// commands-only log (replayable `.smt2`)
     log: Option<Box<dyn std::io::Write>>,
+    /// commands-plus-responses transcript (verus-explorer: also where
+    /// section markers + response blocks land for the unified UI tab)
+    transcript_log: Option<Box<dyn std::io::Write>>,
     /// string of space characters representing current indentation level
     current_indent: String,
 }
@@ -32,6 +35,7 @@ impl Emitter {
             node_writer: NodeWriter::new(),
             pipe_buffer,
             log: writer,
+            transcript_log: None,
             current_indent: "".to_string(),
         }
     }
@@ -40,8 +44,12 @@ impl Emitter {
         self.log = writer;
     }
 
+    pub fn set_transcript_log(&mut self, writer: Option<Box<dyn std::io::Write>>) {
+        self.transcript_log = writer;
+    }
+
     fn is_none(&self) -> bool {
-        self.pipe_buffer.is_none() && self.log.is_none()
+        self.pipe_buffer.is_none() && self.log.is_none() && self.transcript_log.is_none()
     }
 
     /// Return all the data in pipe_buffer, and reset pipe_buffer to Some empty vector
@@ -52,13 +60,13 @@ impl Emitter {
     }
 
     pub fn indent(&mut self) {
-        if let Some(_) = self.log {
+        if self.log.is_some() || self.transcript_log.is_some() {
             self.current_indent = self.current_indent.clone() + " ";
         }
     }
 
     pub fn unindent(&mut self) {
-        if let Some(_) = self.log {
+        if self.log.is_some() || self.transcript_log.is_some() {
             self.current_indent = self.current_indent[1..].to_string();
         }
     }
@@ -68,11 +76,69 @@ impl Emitter {
             writeln!(w, "").unwrap();
             w.flush().unwrap();
         }
+        if let Some(w) = &mut self.transcript_log {
+            writeln!(w, "").unwrap();
+            w.flush().unwrap();
+        }
     }
 
     pub fn comment(&mut self, s: &str) {
+        if let Some(w) = &mut self.pipe_buffer {
+            writeln!(w, "{};; {}", self.current_indent, s).unwrap();
+            w.flush().unwrap();
+        }
         if let Some(w) = &mut self.log {
             writeln!(w, "{};; {}", self.current_indent, s).unwrap();
+            w.flush().unwrap();
+        }
+        if let Some(w) = &mut self.transcript_log {
+            writeln!(w, "{};; {}", self.current_indent, s).unwrap();
+            w.flush().unwrap();
+        }
+    }
+
+    // verus-explorer: section open marker — `;;<marker> <label>`.
+    // Writes to `log` and `transcript_log`, never to `pipe_buffer`.
+    // The marker char lets downstream consumers (the browser's fold
+    // scanner in `public/app.js`) tell section-opening banners apart
+    // from plain comments without enumerating op-kind label strings.
+    // Markers mirror the CM6 fold-gutter glyphs:
+    //   `>` — open a section that auto-folds (▸ collapsed)
+    //   `v` — open a section that stays expanded but foldable (▾)
+    // Each open must be paired with a `section_close()` (see below).
+    // Sections nest — an open inside another open creates a child.
+    //
+    // `pipe_buffer` is intentionally skipped: pipe contents are
+    // what get flushed to Z3, and a `;;` comment line in the middle
+    // of a `(check-sat)` batch is harmless but adds noise to the
+    // wire. The downstream UI reads from the writer side anyway.
+    pub fn section(&mut self, marker: char, label: &str) {
+        // Section markers are structural and always land at column
+        // 0 — the JS scanner's line-prefix checks (`line[2]` for
+        // the marker char) don't account for `current_indent`
+        // whitespace, and an open/close mismatch there misaligns
+        // the stack-based fold builder.
+        if let Some(w) = &mut self.log {
+            writeln!(w, ";;{} {}", marker, label).unwrap();
+            w.flush().unwrap();
+        }
+        if let Some(w) = &mut self.transcript_log {
+            writeln!(w, ";;{} {}", marker, label).unwrap();
+            w.flush().unwrap();
+        }
+    }
+
+    // verus-explorer: section close marker — `;;<`. Closes the
+    // innermost open section. Writes to `log` and `transcript_log`,
+    // never to `pipe_buffer`; also skips `current_indent` — see
+    // `section` above.
+    pub fn section_close(&mut self) {
+        if let Some(w) = &mut self.log {
+            writeln!(w, ";;<").unwrap();
+            w.flush().unwrap();
+        }
+        if let Some(w) = &mut self.transcript_log {
+            writeln!(w, ";;<").unwrap();
             w.flush().unwrap();
         }
     }
@@ -91,6 +157,34 @@ impl Emitter {
                 self.node_writer.node_to_string_indent(&self.current_indent, &node)
             )
             .unwrap();
+            w.flush().unwrap();
+        }
+        if let Some(w) = &mut self.transcript_log {
+            writeln!(
+                w,
+                "{}{}",
+                self.current_indent,
+                self.node_writer.node_to_string_indent(&self.current_indent, &node)
+            )
+            .unwrap();
+            w.flush().unwrap();
+        }
+    }
+
+    // verus-explorer: write the response half of a Z3 round trip —
+    // `;;> response <ms>ms\n<line>\n…\n;;<` — to `transcript_log`
+    // only. Auto-folded by default so large model dumps / stats
+    // replies fold independently. Commands flow through `log_node`
+    // at emission time; this method covers the matching response
+    // block. Skipping `log` keeps the commands-only `.smt2`
+    // output replayable in `z3 -in`.
+    pub fn log_response_block(&mut self, elapsed_ms: f64, lines: &[String]) {
+        if let Some(w) = &mut self.transcript_log {
+            writeln!(w, ";;> response {:.2}ms", elapsed_ms).unwrap();
+            for line in lines {
+                writeln!(w, "{}", line).unwrap();
+            }
+            writeln!(w, ";;<").unwrap();
             w.flush().unwrap();
         }
     }

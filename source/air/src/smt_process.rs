@@ -1,3 +1,12 @@
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{CommandsHandle, SmtProcess};
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm::{CommandsHandle, SmtProcess};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+
 use crate::context::SmtSolver;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout};
@@ -35,7 +44,6 @@ pub struct SmtProcess {
         Option<(BufReader<ChildStdout>, Receiver<(BufReader<ChildStdout>, Vec<String>)>)>,
     recv_requests: Sender<BufReader<ChildStdout>>,
     child: Child,
-    transcript_log: Option<Box<dyn std::io::Write>>,
 }
 
 const DONE: &str = "<<DONE>>";
@@ -98,7 +106,7 @@ fn reader_thread(
 }
 
 impl SmtProcess {
-    pub fn launch(solver: &SmtSolver, transcript_log: Option<Box<dyn std::io::Write>>) -> Self {
+    pub fn launch(solver: &SmtSolver) -> Self {
         let solver_info = SolverInfo::new(solver);
         let mut child = match std::process::Command::new(solver_info.executable())
             .args(match solver {
@@ -149,28 +157,18 @@ impl SmtProcess {
             responses_buf_recv: Some((smt_pipe_stdout, responses_receiver)),
             recv_requests: recv_responses_sender,
             child: child,
-            transcript_log,
         }
     }
 
-    pub(crate) fn set_transcript_log(&mut self, writer: Box<dyn std::io::Write>) {
-        self.transcript_log = Some(writer);
-    }
-
-    /// Send commands to Z3, wait for Z3 to acknowledge commands, and return responses
+    /// Send commands to Z3, wait for Z3 to acknowledge commands, and return responses.
+    /// Caller routes the response into the SMT transcript via
+    /// `Context::log_smt_response` with its own elapsed timing.
     pub(crate) fn send_commands(&mut self, commands: Vec<u8>) -> Vec<String> {
         self.send_commands_async(commands).wait()
     }
 
     /// Send commands to Z3
     pub(crate) fn send_commands_async<'a>(&'a mut self, commands: Vec<u8>) -> CommandsHandle<'a> {
-        // Send request to writer thread
-        if let Some(writer) = &mut self.transcript_log {
-            writeln!(writer, ";;;>>> QUERY").unwrap();
-            writer.write_all(&commands).unwrap();
-            writeln!(writer, ";;;<<<").unwrap();
-            writer.flush().unwrap();
-        }
         self.requests
             .as_mut()
             .unwrap()
@@ -197,29 +195,16 @@ pub struct CommandsHandle<'a> {
 }
 
 impl<'a> CommandsHandle<'a> {
-    fn log_result(&mut self, result: &Vec<String>) {
-        if let Some(writer) = &mut self.smt_process.transcript_log {
-            writeln!(writer, ";;;>>> RESPONSE").unwrap();
-            for line in result {
-                writeln!(writer, "{}", line).unwrap();
-            }
-            writeln!(writer, ";;;<<<").unwrap();
-            writer.flush().unwrap();
-        }
-    }
-
-    pub fn wait(mut self) -> Vec<String> {
+    pub fn wait(self) -> Vec<String> {
         let (smt_pipe_stdout, result) =
             self.receiver.recv().expect("internal error: Z3 reader thread failure");
-        self.log_result(&result);
         self.smt_process.responses_buf_recv = Some((smt_pipe_stdout, self.receiver));
         result
     }
 
-    pub fn wait_timeout(mut self, timeout: std::time::Duration) -> Result<Vec<String>, Self> {
+    pub fn wait_timeout(self, timeout: std::time::Duration) -> Result<Vec<String>, Self> {
         match self.receiver.recv_timeout(timeout) {
             Ok((smt_pipe_stdout, result)) => {
-                self.log_result(&result);
                 self.smt_process.responses_buf_recv = Some((smt_pipe_stdout, self.receiver));
                 Ok(result)
             }
@@ -237,6 +222,82 @@ impl Drop for SmtProcess {
         std::mem::drop(self.requests.take());
         if let Err(e) = self.child.wait() {
             panic!("smt process exited with error: {:?}", e);
+        }
+    }
+}
+
+} // mod native
+
+#[cfg(target_arch = "wasm32")]
+mod wasm {
+    use crate::context::SmtSolver;
+
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    #[allow(non_snake_case)]
+    extern "C" {
+        fn Z3_mk_config() -> u32;
+        fn Z3_mk_context(cfg: u32) -> u32;
+        fn Z3_del_config(cfg: u32);
+        fn Z3_eval_smtlib2_string(ctx: u32, script: &str) -> String;
+        fn Z3_del_context(ctx: u32);
+    }
+
+    pub struct SmtProcess {
+        z3_ctx: u32,
+    }
+
+    impl SmtProcess {
+        pub fn launch(_solver: &SmtSolver) -> Self {
+            let cfg = Z3_mk_config();
+            let z3_ctx = Z3_mk_context(cfg);
+            Z3_del_config(cfg);
+            SmtProcess { z3_ctx }
+        }
+
+        pub(crate) fn send_commands(&mut self, commands: Vec<u8>) -> Vec<String> {
+            self.send_commands_async(commands).wait()
+        }
+
+        pub(crate) fn send_commands_async<'a>(
+            &'a mut self,
+            commands: Vec<u8>,
+        ) -> CommandsHandle<'a> {
+            let script = std::str::from_utf8(&commands)
+                .expect("non-utf8 in SMT commands sent to wasm Z3 bridge");
+            let raw = Z3_eval_smtlib2_string(self.z3_ctx, script);
+            // Z3_eval_smtlib2_string returns the solver's stdout. Split on newlines
+            // and drop empties to match what the native pipe-reader produces.
+            let lines: Vec<String> = raw
+                .lines()
+                .map(|l| l.trim_end_matches('\r').to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            CommandsHandle { _smt_process: self, result: Some(lines) }
+        }
+    }
+
+    impl Drop for SmtProcess {
+        fn drop(&mut self) {
+            Z3_del_context(self.z3_ctx);
+        }
+    }
+
+    pub struct CommandsHandle<'a> {
+        _smt_process: &'a mut SmtProcess,
+        result: Option<Vec<String>>,
+    }
+
+    impl<'a> CommandsHandle<'a> {
+        pub fn wait(mut self) -> Vec<String> {
+            self.result.take().expect("CommandsHandle waited twice")
+        }
+
+        pub fn wait_timeout(
+            self,
+            _timeout: std::time::Duration,
+        ) -> Result<Vec<String>, Self> {
+            // wasm bridge is synchronous — never times out.
+            Ok(self.wait())
         }
     }
 }

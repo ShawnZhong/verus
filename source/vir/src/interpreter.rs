@@ -31,8 +31,13 @@ use std::io::Write;
 use std::iter::FromIterator;
 use std::ops::ControlFlow;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
-use std::time::Instant;
+// Routed through air's polyfill: on native, this is `std::time::Instant`;
+// on wasm32 it's a zero-stub since wasm has no monotonic clock.
+// `check_time_warning` (the only caller using durations here) is
+// debug-only, so the stub's zero-durations never actually drive logic.
+use air::time::Instant;
 use vir_macros::ToDebugSNode;
 
 // An approximation of how many interpreter invocations we can do in 1 second (in release mode)
@@ -2085,11 +2090,38 @@ where
     // Make a new global so we can move it into the new thread
     let global = global.from_self_with_log(global.interpreter_log.clone());
 
-    let builder =
-        thread::Builder::new().name("interpreter".to_string()).stack_size(1024 * 1024 * 1024); // 1 GB
     let mut taken_log = log.take();
     let quiet = diagnostics.is_none();
+
+    // On wasm32-unknown-unknown `thread::Builder::spawn` returns
+    // `io::ErrorKind::Unsupported` (no threads at all), so there's no
+    // way to honor the 1 GiB stack request — just run the interpreter
+    // inline on the calling thread. Callers embedding vir for wasm
+    // must instead configure the module's linear-memory stack via
+    // `-z stack-size=...` at link time (see verus-explorer's
+    // `.cargo/config.toml`, which reserves 64 MiB). If that still
+    // overflows on some proof, `--no-compute` in the user's pragma is
+    // the escape hatch.
+    #[cfg(target_arch = "wasm32")]
     let (taken_log, res) = {
+        let res = eval_expr_launch(
+            &global,
+            exp.clone(),
+            &*fun_ssts,
+            rlimit,
+            arch,
+            mode,
+            &mut taken_log,
+            quiet,
+        );
+        (taken_log, res)
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let (taken_log, res) = {
+        let builder = thread::Builder::new()
+            .name("interpreter".to_string())
+            .stack_size(1024 * 1024 * 1024); // 1 GB
         let handler = {
             // Create local versions that we own and hence can pass to the closure
             let exp = exp.clone();

@@ -1,652 +1,520 @@
+// Verus Builtin Macros — regular library shape.
+//
+// Was a `proc-macro = true` crate; now a regular rlib. Consumers (rust_verify
+// on the host, verus-explorer's rustc-in-wasm) register `MACROS` with the
+// patched `rustc_metadata::proc_macro_registry`, which swaps the empty-body
+// `pub macro NAME` stubs below for the real Bang/Attr/Derive client at resolve
+// time. Single crate now serves both paths — wasm32 can't emit `proc-macro`,
+// and rustc-in-wasm has no dlopen, so the dylib path is unusable on either
+// side.
+//
+// Two compilation modes via the `stub_only` cfg:
+//   * default — full crate (impl fns, `MACROS`, deps on syn/quote/etc.);
+//     used by cargo for both the host (rust_verify links MACROS) and the
+//     explorer's wasm32 build (registers MACROS at runtime via
+//     `proc_macros::install`).
+//   * `--cfg=stub_only` — only the `pub macro` shims; built by
+//     `scripts/build-libs-sysroot.sh` against our staged wasm32 sysroot,
+//     bundled as the rmeta vstd and user code link against in rustc-in-wasm.
+//
+// Host-only items are wrapped in `host_only! { ... }` (a macro_rules that
+// stamps `#[cfg(not(stub_only))]` onto each item) — keeps the cfg branching
+// in one place rather than sprinkled across ~60 declarations.
+
+// `stub_only` builds against our minimal staged sysroot (core+alloc, no std).
+// All `std::*` paths are inside `host_only!`.
+#![cfg_attr(stub_only, no_std)]
 #![cfg_attr(
-    verus_keep_ghost,
+    all(verus_keep_ghost, not(stub_only)),
     feature(proc_macro_span),
     feature(proc_macro_tracked_env),
     feature(proc_macro_quote),
     feature(proc_macro_expand),
     feature(proc_macro_diagnostic)
 )]
+// `proc_macro::bridge` is `#[doc(hidden)] pub mod bridge` — gated as "internal
+// to the compiler", which is exactly what we are when registering descriptors
+// with `rustc_metadata::proc_macro_registry`.
+#![cfg_attr(not(stub_only), allow(internal_features))]
+#![cfg_attr(not(stub_only), feature(proc_macro_internals))]
+// `pub macro NAME` decl_macro stubs (see file header).
+#![feature(decl_macro)]
 
-use std::sync::OnceLock;
-use synstructure::{decl_attribute, decl_derive};
-
-#[macro_use]
-mod syntax;
-mod atomic_ghost;
-mod attr_block_trait;
-mod attr_rewrite;
-mod calc_macro;
-mod contrib;
-mod enum_synthesize;
-mod fndecl;
-mod is_variant;
-mod rustdoc;
-mod struct_decl_inv;
-mod structural;
-mod syntax_trait;
-mod topological_sort;
-mod unerased_proxies;
-
-decl_derive!([Structural] => structural::derive_structural);
-decl_derive!([StructuralEq] => structural::derive_structural_eq);
-
-decl_attribute! {
-    [is_variant] =>
-    /// Add `is_<VARIANT>` and `get_<VARIANT>` functions to an enum
-    is_variant::attribute_is_variant
-}
-decl_attribute! {
-    [is_variant_no_deprecation_warning] =>
-    /// Add `is_<VARIANT>` and `get_<VARIANT>` functions to an enum
-    is_variant::attribute_is_variant_no_deprecation_warning
+macro_rules! host_only {
+    ($($i:item)*) => { $(#[cfg(not(stub_only))] $i)* };
 }
 
-#[proc_macro_attribute]
-pub fn verus_enum_synthesize(
-    attr: proc_macro::TokenStream,
-    input: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    enum_synthesize::attribute_verus_enum_synthesize(&cfg_erase(), attr, input)
-}
+host_only! {
+    // `proc_macro` is part of the host sysroot but isn't in the prelude for
+    // non-proc-macro crates.
+    extern crate proc_macro;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EraseGhost {
-    /// keep all ghost code
-    Keep,
-    /// erase ghost code, but leave ghost stubs
-    Erase,
-    /// erase all ghost code
-    EraseAll,
-}
+    use std::sync::OnceLock;
 
-impl EraseGhost {
-    fn keep(&self) -> bool {
-        match self {
-            EraseGhost::Keep => true,
-            EraseGhost::Erase | EraseGhost::EraseAll => false,
-        }
-    }
+    use proc_macro::bridge::client::ProcMacro;
 
-    fn erase(&self) -> bool {
-        match self {
-            EraseGhost::Keep => false,
-            EraseGhost::Erase | EraseGhost::EraseAll => true,
-        }
-    }
+    #[macro_use]
+    mod syntax;
+    mod atomic_ghost;
+    mod attr_block_trait;
+    mod attr_rewrite;
+    mod calc_macro;
+    mod contrib;
+    mod enum_synthesize;
+    mod fndecl;
+    mod is_variant;
+    mod rustdoc;
+    mod struct_decl_inv;
+    mod structural;
+    mod syntax_trait;
+    mod topological_sort;
+    mod unerased_proxies;
 
-    fn erase_all(&self) -> bool {
-        match self {
-            EraseGhost::Keep | EraseGhost::Erase => false,
-            EraseGhost::EraseAll => true,
-        }
-    }
-}
+    // -----------------------------------------------------------------------
+    // Internal helpers (mirror what `decl_derive!`/`decl_attribute!` would
+    // expand to for the `Structural` / `is_variant` families).
+    // -----------------------------------------------------------------------
 
-// Proc macros must reside at the root of the crate
-#[proc_macro]
-pub fn fndecl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    proc_macro::TokenStream::from(fndecl::fndecl(proc_macro2::TokenStream::from(input)))
-}
-
-#[proc_macro]
-pub fn verus_keep_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_items(input, EraseGhost::Keep, true)
-}
-
-#[proc_macro]
-pub fn verus_erase_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_items(input, EraseGhost::Erase, true)
-}
-
-#[proc_macro]
-pub fn verus(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_items(input, cfg_erase(), true)
-}
-
-/// Like verus!, but for use inside a (non-trait) impl
-#[proc_macro]
-pub fn verus_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_impl_items(input, cfg_erase(), true, false)
-}
-
-/// Like verus!, but for use inside a trait impl
-#[proc_macro]
-pub fn verus_trait_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_impl_items(input, cfg_erase(), true, true)
-}
-
-#[proc_macro]
-pub fn verus_proof_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_expr(EraseGhost::Keep, true, input)
-}
-
-#[proc_macro]
-pub fn verus_exec_expr_keep_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_expr(EraseGhost::Keep, false, input)
-}
-
-#[proc_macro]
-pub fn verus_exec_expr_erase_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_expr(EraseGhost::Keep, false, input)
-}
-
-#[proc_macro]
-pub fn verus_exec_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::rewrite_expr(cfg_erase(), false, input)
-}
-
-#[cfg(verus_keep_ghost)]
-pub(crate) fn cfg_erase() -> EraseGhost {
-    let ts: proc_macro::TokenStream = quote::quote! { ::core::cfg!(verus_keep_ghost_body) }.into();
-    let ts_stubs: proc_macro::TokenStream = quote::quote! { ::core::cfg!(verus_keep_ghost) }.into();
-    let (bool_ts, bool_ts_stubs) = match (ts.expand_expr(), ts_stubs.expand_expr()) {
-        (Ok(name), Ok(name_stubs)) => (name.to_string(), name_stubs.to_string()),
-        _ => {
-            panic!("cfg_erase call failed")
-        }
-    };
-    match (bool_ts.as_str(), bool_ts_stubs.as_str()) {
-        ("true", "true" | "false") => EraseGhost::Keep,
-        ("false", "true") => EraseGhost::Erase,
-        ("false", "false") => EraseGhost::EraseAll,
-        _ => {
-            panic!("cfg_erase call failed")
-        }
-    }
-}
-
-#[cfg(not(verus_keep_ghost))]
-pub(crate) fn cfg_erase() -> EraseGhost {
-    EraseGhost::EraseAll
-}
-
-#[derive(Clone, Copy)]
-enum VstdKind {
-    /// The current crate is vstd.
-    IsVstd,
-    /// There is no vstd (only verus_builtin). Really only used for testing.
-    NoVstd,
-    /// Imports the vstd crate like usual.
-    Imported,
-    /// Embed vstd and verus_builtin as modules, necessary for verifying the `core` library.
-    IsCore,
-    /// For other crates in stdlib verification that import core
-    ImportedViaCore,
-}
-
-fn vstd_kind() -> VstdKind {
-    static VSTD_KIND: OnceLock<VstdKind> = OnceLock::new();
-    *VSTD_KIND.get_or_init(|| {
-        match std::env::var("VSTD_KIND") {
-            Ok(s) => {
-                if &s == "IsVstd" {
-                    return VstdKind::IsVstd;
-                } else if &s == "NoVstd" {
-                    return VstdKind::NoVstd;
-                } else if &s == "Imported" {
-                    return VstdKind::Imported;
-                } else if &s == "IsCore" {
-                    return VstdKind::IsCore;
-                } else if &s == "ImportedViaCore" {
-                    return VstdKind::ImportedViaCore;
-                } else {
-                    panic!("The environment variable VSTD_KIND was set but its value ('{:}') is invalid. Allowed values are 'IsVstd', 'NoVstd', 'Imported', 'IsCore', and 'ImportedViaCore'", s);
-                }
-            }
-            _ => { }
-        }
-
-        // When building vstd normally through cargo, we won't get a VSTD_KIND env var,
-        // but we can use CARGO_PGK_NAME instead.
-        let is_vstd = std::env::var("CARGO_PKG_NAME").map_or(false, |s| s == "vstd");
-        if is_vstd {
-            return VstdKind::IsVstd;
-        }
-
-        // For tests, which don't go through the verus binary, we infer the mode from
-        // these cfg options
-        if cfg_verify_core() {
-            return VstdKind::IsCore;
-        }
-        if cfg_no_vstd() {
-            return VstdKind::NoVstd;
-        }
-
-        // If none of the above, we assume a normal build
-        return VstdKind::Imported;
-    })
-}
-
-#[cfg(verus_keep_ghost)]
-pub(crate) fn cfg_verify_core() -> bool {
-    static CFG_VERIFY_CORE: OnceLock<bool> = OnceLock::new();
-    *CFG_VERIFY_CORE.get_or_init(|| {
-        let ts: proc_macro::TokenStream = quote::quote! { ::core::cfg!(verus_verify_core) }.into();
-        let bool_ts = match ts.expand_expr() {
-            Ok(name) => name.to_string(),
-            _ => {
-                panic!("cfg_verify_core call failed")
-            }
+    fn derive_with<F>(input: proc_macro::TokenStream, inner: F) -> proc_macro::TokenStream
+    where
+        F: FnOnce(synstructure::Structure) -> proc_macro2::TokenStream,
+    {
+        let parsed: syn::DeriveInput = match syn::parse(input) {
+            Ok(p) => p,
+            Err(e) => return e.to_compile_error().into(),
         };
-        match bool_ts.as_str() {
-            "true" => true,
-            "false" => false,
-            _ => {
-                panic!("cfg_verify_core call failed")
-            }
+        match synstructure::Structure::try_new(&parsed) {
+            Ok(s) => inner(s).into(),
+            Err(e) => e.to_compile_error().into(),
         }
-    })
-}
+    }
 
-// Because 'expand_expr' is unstable, we need a different impl when `not(verus_keep_ghost)`.
-#[cfg(not(verus_keep_ghost))]
-pub(crate) fn cfg_verify_core() -> bool {
-    false
-}
-
-#[cfg(verus_keep_ghost)]
-fn cfg_no_vstd() -> bool {
-    static CFG_VERIFY_CORE: OnceLock<bool> = OnceLock::new();
-    *CFG_VERIFY_CORE.get_or_init(|| {
-        let ts: proc_macro::TokenStream = quote::quote! { ::core::cfg!(verus_no_vstd) }.into();
-        let bool_ts = match ts.expand_expr() {
-            Ok(name) => name.to_string(),
-            _ => {
-                panic!("cfg_no_vstd call failed")
-            }
+    fn attr_with_structure<F>(
+        attr: proc_macro::TokenStream,
+        item: proc_macro::TokenStream,
+        inner: F,
+    ) -> proc_macro::TokenStream
+    where
+        F: FnOnce(proc_macro2::TokenStream, synstructure::Structure) -> proc_macro2::TokenStream,
+    {
+        let parsed: syn::DeriveInput = match syn::parse(item) {
+            Ok(p) => p,
+            Err(e) => return e.to_compile_error().into(),
         };
-        match bool_ts.as_str() {
-            "true" => true,
-            "false" => false,
-            _ => {
-                panic!("cfg_no_vstd call failed")
-            }
+        match synstructure::Structure::try_new(&parsed) {
+            Ok(s) => inner(attr.into(), s).into(),
+            Err(e) => e.to_compile_error().into(),
         }
-    })
-}
+    }
 
-// Because 'expand_expr' is unstable, we need a different impl when `not(verus_keep_ghost)`.
-#[cfg(not(verus_keep_ghost))]
-fn cfg_no_vstd() -> bool {
-    false
-}
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum EraseGhost {
+        /// keep all ghost code
+        Keep,
+        /// erase ghost code, but leave ghost stubs
+        Erase,
+        /// erase all ghost code
+        EraseAll,
+    }
 
-/// verus_proof_macro_exprs!(f!(exprs)) applies verus syntax to transform exprs into exprs',
-/// then returns f!(exprs'),
-/// where exprs is a sequence of expressions separated by ",", ";", and/or "=>".
-#[proc_macro]
-pub fn verus_proof_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::proof_macro_exprs(EraseGhost::Keep, true, input)
-}
+    impl EraseGhost {
+        pub(crate) fn keep(&self) -> bool {
+            matches!(self, EraseGhost::Keep)
+        }
 
-#[proc_macro]
-pub fn verus_exec_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::proof_macro_exprs(cfg_erase(), false, input)
-}
+        pub(crate) fn erase(&self) -> bool {
+            !self.keep()
+        }
 
-// This is for expanding the body of an open_*_invariant in exec mode
-#[proc_macro]
-pub fn verus_exec_inv_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    // We pass `treat_elements_as_ghost: false` to treat all elements besides
-    // the third ($eexpr) as ghost.
-    syntax::inv_macro_exprs(cfg_erase(), false, input)
-}
+        pub(crate) fn erase_all(&self) -> bool {
+            matches!(self, EraseGhost::EraseAll)
+        }
+    }
 
-// This is for expanding the body of an open_*_invariant in `proof` mode
-#[proc_macro]
-pub fn verus_ghost_inv_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    // We pass `treat_elements_as_ghost: true` to treat all elements as ghost.
-    syntax::inv_macro_exprs(cfg_erase(), true, input)
-}
+    // `expand_expr` requires the bridge to be live. It is when our impl fns
+    // are invoked through the proc-macro bridge (BangProcMacro::expand /
+    // AttrProcMacro::expand / DeriveProcMacro::expand), which is the only way
+    // these are reached after the registry override fires.
+    #[cfg(verus_keep_ghost)]
+    pub(crate) fn cfg_erase() -> EraseGhost {
+        let ts: proc_macro::TokenStream =
+            quote::quote! { ::core::cfg!(verus_keep_ghost_body) }.into();
+        let ts_stubs: proc_macro::TokenStream =
+            quote::quote! { ::core::cfg!(verus_keep_ghost) }.into();
+        let (bool_ts, bool_ts_stubs) = match (ts.expand_expr(), ts_stubs.expand_expr()) {
+            (Ok(name), Ok(name_stubs)) => (name.to_string(), name_stubs.to_string()),
+            _ => panic!("cfg_erase call failed"),
+        };
+        match (bool_ts.as_str(), bool_ts_stubs.as_str()) {
+            ("true", "true" | "false") => EraseGhost::Keep,
+            ("false", "true") => EraseGhost::Erase,
+            ("false", "false") => EraseGhost::EraseAll,
+            _ => panic!("cfg_erase call failed"),
+        }
+    }
 
-/// `verus_proof_macro_explicit_exprs!(f!(tts))` applies verus syntax to transform `tts` into
-/// `tts'`, then returns `f!(tts')`, only applying the transform to any of the exprs within it that
-/// are explicitly prefixed with `@@`, leaving the rest as-is. Contrast this to
-/// [`verus_proof_macro_exprs`] which is likely what you want to try first to see if it satisfies
-/// your needs.
-#[proc_macro]
-pub fn verus_proof_macro_explicit_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    syntax::proof_macro_explicit_exprs(EraseGhost::Keep, true, input)
-}
+    #[cfg(not(verus_keep_ghost))]
+    pub(crate) fn cfg_erase() -> EraseGhost {
+        EraseGhost::EraseAll
+    }
 
-#[proc_macro]
-pub fn struct_with_invariants(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    struct_decl_inv::struct_decl_inv(input)
-}
+    #[derive(Clone, Copy)]
+    pub(crate) enum VstdKind {
+        /// The current crate is vstd.
+        IsVstd,
+        /// There is no vstd (only verus_builtin). Really only used for testing.
+        NoVstd,
+        /// Imports the vstd crate like usual.
+        Imported,
+        /// Embed vstd and verus_builtin as modules, necessary for verifying the `core` library.
+        IsCore,
+        /// For other crates in stdlib verification that import core
+        ImportedViaCore,
+    }
 
-#[proc_macro]
-pub fn atomic_with_ghost_helper(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    atomic_ghost::atomic_ghost(input)
-}
+    pub(crate) fn vstd_kind() -> VstdKind {
+        static VSTD_KIND: OnceLock<VstdKind> = OnceLock::new();
+        *VSTD_KIND.get_or_init(|| {
+            if let Ok(s) = std::env::var("VSTD_KIND") {
+                return match s.as_str() {
+                    "IsVstd" => VstdKind::IsVstd,
+                    "NoVstd" => VstdKind::NoVstd,
+                    "Imported" => VstdKind::Imported,
+                    "IsCore" => VstdKind::IsCore,
+                    "ImportedViaCore" => VstdKind::ImportedViaCore,
+                    _ => panic!("The environment variable VSTD_KIND was set but its value ('{:}') is invalid. Allowed values are 'IsVstd', 'NoVstd', 'Imported', 'IsCore', and 'ImportedViaCore'", s),
+                };
+            }
+            if std::env::var("CARGO_PKG_NAME").map_or(false, |s| s == "vstd") {
+                return VstdKind::IsVstd;
+            }
+            if cfg_verify_core() {
+                return VstdKind::IsCore;
+            }
+            if cfg_no_vstd() {
+                return VstdKind::NoVstd;
+            }
+            VstdKind::Imported
+        })
+    }
 
-#[proc_macro]
-pub fn calc_proc_macro(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    calc_macro::calc_macro(input)
-}
+    #[cfg(verus_keep_ghost)]
+    pub(crate) fn cfg_verify_core() -> bool {
+        static CFG_VERIFY_CORE: OnceLock<bool> = OnceLock::new();
+        *CFG_VERIFY_CORE.get_or_init(|| {
+            let ts: proc_macro::TokenStream =
+                quote::quote! { ::core::cfg!(verus_verify_core) }.into();
+            match ts.expand_expr().map(|t| t.to_string()) {
+                Ok(s) if s == "true" => true,
+                Ok(s) if s == "false" => false,
+                _ => panic!("cfg_verify_core call failed"),
+            }
+        })
+    }
 
-/*** Verus small macro definition for executable items ***/
+    #[cfg(not(verus_keep_ghost))]
+    pub(crate) fn cfg_verify_core() -> bool {
+        false
+    }
 
-// If no #[verus_verify] on the item, it is verifier::external by default.
-// When compiling code with verus:
-// #[verus_verify] annotates the item with verifier::verify
-// #[verus_verify(external_body)] annotates the item with verifier::external_body
-// When compiling code with standard rust tool, the item has no verifier annotation.
-#[proc_macro_attribute]
-pub fn verus_verify(
-    args: proc_macro::TokenStream,
-    input: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    attr_rewrite::rewrite_verus_attribute(&cfg_erase(), args, input)
-}
+    #[cfg(verus_keep_ghost)]
+    fn cfg_no_vstd() -> bool {
+        static CFG_NO_VSTD: OnceLock<bool> = OnceLock::new();
+        *CFG_NO_VSTD.get_or_init(|| {
+            let ts: proc_macro::TokenStream =
+                quote::quote! { ::core::cfg!(verus_no_vstd) }.into();
+            match ts.expand_expr().map(|t| t.to_string()) {
+                Ok(s) if s == "true" => true,
+                Ok(s) if s == "false" => false,
+                _ => panic!("cfg_no_vstd call failed"),
+            }
+        })
+    }
 
-#[proc_macro_attribute]
-pub fn verus_spec(
-    attr: proc_macro::TokenStream,
-    input: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    attr_rewrite::rewrite_verus_spec(cfg_erase(), attr.into(), input.into()).into()
-}
+    #[cfg(not(verus_keep_ghost))]
+    fn cfg_no_vstd() -> bool {
+        false
+    }
 
-/// proof_with add ghost input/output to the next function call.
-/// In stable rust, we cannot add attribute-based macro to expr/statement.
-/// Using proof_with! to tell #[verus_spec] to add ghost input/output.
-/// Using proof_with outside of #[verus_spec] does not have any side effects.
-#[proc_macro]
-pub fn proof_with(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    proc_macro::TokenStream::new()
-}
+    // -----------------------------------------------------------------------
+    // Real impl fns (proc_macro::TokenStream in/out, called via the bridge
+    // once the registry has swapped the stub kinds). One per macro name in
+    // `MACROS`.
+    // -----------------------------------------------------------------------
 
-/// Add a verus proof block.
-#[proc_macro]
-pub fn proof(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    attr_rewrite::proof_rewrite(cfg_erase(), input.into()).into()
-}
+    pub fn derive_structural(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        derive_with(input, structural::derive_structural)
+    }
 
-/// proof_decl add extra stmts that are used only
-/// for verification.
-/// For example, declare a ghost/tracked variable.
-/// To avoid confusion, let stmts without ghost/tracked is not supported.
-/// Non-local stmts inside proof_decl! are treated similar to those in proof!
-#[proc_macro]
-pub fn proof_decl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let erase = cfg_erase();
-    if erase.keep() {
-        syntax::rewrite_proof_decl(erase, input.into())
-    } else {
+    pub fn derive_structural_eq(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        derive_with(input, structural::derive_structural_eq)
+    }
+
+    pub fn attribute_is_variant(
+        attr: proc_macro::TokenStream,
+        item: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        attr_with_structure(attr, item, is_variant::attribute_is_variant)
+    }
+
+    pub fn attribute_is_variant_no_deprecation_warning(
+        attr: proc_macro::TokenStream,
+        item: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        attr_with_structure(attr, item, is_variant::attribute_is_variant_no_deprecation_warning)
+    }
+
+    pub fn verus_enum_synthesize(
+        attr: proc_macro::TokenStream,
+        input: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        enum_synthesize::attribute_verus_enum_synthesize(&cfg_erase(), attr, input)
+    }
+
+    pub fn fndecl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        proc_macro::TokenStream::from(fndecl::fndecl(proc_macro2::TokenStream::from(input)))
+    }
+
+    pub fn verus_keep_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_items(input, EraseGhost::Keep, true)
+    }
+
+    pub fn verus_erase_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_items(input, EraseGhost::Erase, true)
+    }
+
+    pub fn verus(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_items(input, cfg_erase(), true)
+    }
+
+    pub fn verus_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_impl_items(input, cfg_erase(), true, false)
+    }
+
+    pub fn verus_trait_impl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_impl_items(input, cfg_erase(), true, true)
+    }
+
+    pub fn verus_proof_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_expr(EraseGhost::Keep, true, input)
+    }
+
+    pub fn verus_exec_expr_keep_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_expr(EraseGhost::Keep, false, input)
+    }
+
+    pub fn verus_exec_expr_erase_ghost(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_expr(EraseGhost::Keep, false, input)
+    }
+
+    pub fn verus_exec_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::rewrite_expr(cfg_erase(), false, input)
+    }
+
+    pub fn verus_proof_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::proof_macro_exprs(EraseGhost::Keep, true, input)
+    }
+
+    pub fn verus_exec_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::proof_macro_exprs(cfg_erase(), false, input)
+    }
+
+    pub fn verus_exec_inv_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::inv_macro_exprs(cfg_erase(), false, input)
+    }
+
+    pub fn verus_ghost_inv_macro_exprs(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        syntax::inv_macro_exprs(cfg_erase(), true, input)
+    }
+
+    pub fn verus_proof_macro_explicit_exprs(
+        input: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        syntax::proof_macro_explicit_exprs(EraseGhost::Keep, true, input)
+    }
+
+    pub fn struct_with_invariants(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        struct_decl_inv::struct_decl_inv(input)
+    }
+
+    pub fn atomic_with_ghost_helper(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        atomic_ghost::atomic_ghost(input)
+    }
+
+    pub fn calc_proc_macro(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        calc_macro::calc_macro(input)
+    }
+
+    pub fn verus_verify(
+        args: proc_macro::TokenStream,
+        input: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        attr_rewrite::rewrite_verus_attribute(&cfg_erase(), args, input)
+    }
+
+    pub fn verus_spec(
+        attr: proc_macro::TokenStream,
+        input: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        attr_rewrite::rewrite_verus_spec(cfg_erase(), attr, input)
+    }
+
+    pub fn proof_with(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         proc_macro::TokenStream::new()
     }
+
+    pub fn proof(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        attr_rewrite::proof_rewrite(cfg_erase(), input.into())
+    }
+
+    pub fn proof_decl(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        let erase = cfg_erase();
+        if erase.keep() {
+            syntax::rewrite_proof_decl(erase, input)
+        } else {
+            proc_macro::TokenStream::new()
+        }
+    }
+
+    pub fn set_build(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        contrib::set_build::set_build(input, false)
+    }
+
+    pub fn set_build_debug(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        contrib::set_build::set_build(input, true)
+    }
+
+    pub fn exec_spec_verified(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        contrib::exec_spec::exec_spec(input, false)
+    }
+
+    pub fn exec_spec_unverified(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+        contrib::exec_spec::exec_spec(input, true)
+    }
+
+    pub fn auto_spec(
+        _args: proc_macro::TokenStream,
+        input: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        // All the work is done in the preprocessing; this just double-checks name resolution.
+        input
+    }
+
+    pub fn make_spec_type(
+        attr: proc_macro::TokenStream,
+        input: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        contrib::spec_derive::make_spec_type(attr, input)
+    }
+
+    pub fn self_view(
+        attr: proc_macro::TokenStream,
+        input: proc_macro::TokenStream,
+    ) -> proc_macro::TokenStream {
+        contrib::spec_derive::self_view(attr, input)
+    }
+
+    // -----------------------------------------------------------------------
+    // Descriptor slice consumed by `rustc_metadata::proc_macro_registry::register`
+    // in both rust_verify and verus-explorer. Order is irrelevant — lookups
+    // are keyed by `(crate_name, macro_name)` (registry path #2 in
+    // `proc_macro_registry.rs`).
+    // -----------------------------------------------------------------------
+    pub static MACROS: &[ProcMacro] = &[
+        ProcMacro::custom_derive("Structural", &[], derive_structural),
+        ProcMacro::custom_derive("StructuralEq", &[], derive_structural_eq),
+        ProcMacro::attr("is_variant", attribute_is_variant),
+        ProcMacro::attr("is_variant_no_deprecation_warning", attribute_is_variant_no_deprecation_warning),
+        ProcMacro::attr("verus_enum_synthesize", verus_enum_synthesize),
+        ProcMacro::bang("fndecl", fndecl),
+        ProcMacro::bang("verus_keep_ghost", verus_keep_ghost),
+        ProcMacro::bang("verus_erase_ghost", verus_erase_ghost),
+        ProcMacro::bang("verus", verus),
+        ProcMacro::bang("verus_impl", verus_impl),
+        ProcMacro::bang("verus_trait_impl", verus_trait_impl),
+        ProcMacro::bang("verus_proof_expr", verus_proof_expr),
+        ProcMacro::bang("verus_exec_expr_keep_ghost", verus_exec_expr_keep_ghost),
+        ProcMacro::bang("verus_exec_expr_erase_ghost", verus_exec_expr_erase_ghost),
+        ProcMacro::bang("verus_exec_expr", verus_exec_expr),
+        ProcMacro::bang("verus_proof_macro_exprs", verus_proof_macro_exprs),
+        ProcMacro::bang("verus_exec_macro_exprs", verus_exec_macro_exprs),
+        ProcMacro::bang("verus_exec_inv_macro_exprs", verus_exec_inv_macro_exprs),
+        ProcMacro::bang("verus_ghost_inv_macro_exprs", verus_ghost_inv_macro_exprs),
+        ProcMacro::bang("verus_proof_macro_explicit_exprs", verus_proof_macro_explicit_exprs),
+        ProcMacro::bang("struct_with_invariants", struct_with_invariants),
+        ProcMacro::bang("atomic_with_ghost_helper", atomic_with_ghost_helper),
+        ProcMacro::bang("calc_proc_macro", calc_proc_macro),
+        ProcMacro::attr("verus_verify", verus_verify),
+        ProcMacro::attr("verus_spec", verus_spec),
+        ProcMacro::bang("proof_with", proof_with),
+        ProcMacro::bang("proof", proof),
+        ProcMacro::bang("proof_decl", proof_decl),
+        ProcMacro::bang("set_build", set_build),
+        ProcMacro::bang("set_build_debug", set_build_debug),
+        ProcMacro::bang("exec_spec_verified", exec_spec_verified),
+        ProcMacro::bang("exec_spec_unverified", exec_spec_unverified),
+        ProcMacro::attr("auto_spec", auto_spec),
+        ProcMacro::attr("make_spec_type", make_spec_type),
+        ProcMacro::attr("self_view", self_view),
+    ];
 }
 
-/*** End of verus small macro definition for executable items ***/
+// ---------------------------------------------------------------------------
+// `pub macro` shim stubs. These exist purely so name resolution in downstream
+// crates (vstd, user code) finds a macro by each user-facing name; the
+// registry override in `rustc_resolve::build_reduced_graph::get_macro_by_def_id`
+// swaps each stub's `SyntaxExtensionKind` for the matching client below at
+// expansion time. Shapes deliberately ignore arguments — the empty body never
+// runs.
+// ---------------------------------------------------------------------------
 
-/*** Start of contrib proc macros
-(unfortunately, proc macros must reside at the root of the crate)
-
-To add a contrib proc macro, complete the following steps:
-- Add a file in builtin_macros/src/contrib/ that contains the bulk of the macro implementation
-  (example: builtin_macros/src/contrib/auto_spec.rs)
-- Declare the file as a submodule of builtin_macros::contrib by adding "pub mod ..." to the top of
-  builtin_macros/src/contrib/mod.rs (example: `pub mod auto_spec;`)
-- Add a short macro declaration below, calling into your file in builtin_macros/src/contrib
-  for any complex work (i.e. the macro declaration below should have a body of at most a few lines)
-- Add a "pub use" to vstd/contrib/mod.rs (example: `pub use verus_builtin_macros::auto_spec;`)
-
-If your macro needs to manipulate function signatures or function bodies,
-it's generally cleaner to write this manipulation on the verus_syn representation of the function
-before it is transformed by `verus!`, rather than trying to manipulate the more complicated output
-of `verus!`.  To work with the verus_syn representation, complete this additional step:
-- In builtin_macros/src/contrib/mod.rs,
-  edit contrib_preprocess_item and/or contrib_preprocess_impl_item to match on your macro name and
-  call into your code that processes the verus_syn item or impl_item.  Example:
-  `"auto_spec" => auto_spec::auto_spec_item(item, tokens, new_items),`.
-  Your code can then edit the item/impl_item in place.
-  It can also optionally emit new items/impl_items by adding them to new_items.
-***/
-
-/// This macro takes an expresion of the form:
-/// `set_build!{ elem_expr: optional_typ | x1: typ1 in ..., ..., xn: typn in ..., cond1, ..., condm }`
-/// or just:
-/// `set_build!{ x: typ in ..., cond1, ..., condm }`
-/// where each `xk: typk in ...` has one of the following forms:
-/// - `xk: typk` for finite types (implementing FiniteFull)
-/// - `xk: typk in expr`, where expr has type Set<typk>
-/// - `xk: typk in lo..hi`, where lo and hi have type typk, where typk implements FiniteRange
-/// - `xk: typk in lo..=hi`, where lo and hi have type typk, where typk implements FiniteRange
-/// and each condk is a boolean expression.
-/// From this, the setbuild macro uses map_by, map_flatten_by, filter, etc. to build a set of
-/// elements specified by elem_expr.
-///
-/// (Note: to see the code generated by set_build, use set_build_debug,
-/// which is like set_build, but also prints the generated builder to stderr as a side effect.)
-///
-/// Important restriction: by default, the elem_expr must be a variable, tuple, or datatype such
-/// that all of the variables x1, ..., xn can be easily found with nothing more that tuple/datatype
-/// field accesses.  In exchange for this restriction, set_build guarantees not to introduce
-/// any extra existential quantifiers into to constructed set.  This makes it easy for proofs
-/// to use sets constructed with set_build, when compared to other forms of Set construction
-/// (like Set::map or Set::flatten) that do introduce existential quantifiers.
-/// To override this default and remove this restriction, you can mark one or more variables as
-/// `exists x: typ` rather than just `x: typ`, and set_build will use map/flatten for these
-/// variables. This will, however, make proofs about the constructed set more difficult.
-///
-/// ## Example: finite types
-/// ```
-/// proof fn test() {
-///     use vstd::contrib::set_build;
-///
-///     let s: Set<u8> = set_build!{ x: u8 };
-///     assert(s.finite());
-///     assert(forall|u: u8| s.contains(u));
-/// }
-/// ```
-/// This generates the set `Set::<u8>::from_finite_type(|x: u8| true)`.
-///
-/// ## Example: filtering
-/// ```
-/// let s: Set<u8> = set_build!{ x: u8, x < 100 };
-/// assert(forall|u: u8| s.contains(u) <==> u < 100);
-/// ```
-/// This generates the set `Set::<u8>::from_finite_type(|x: u8| true).filter(|x: u8| (x < 100))`.
-///
-/// ## Example: ranges
-/// ```
-/// let s: Set<u8> = set_build!{ x: u8 in 10..20 };
-/// assert(forall|u: u8| s.contains(u) <==> 10 <= u < 20);
-/// ```
-/// This generates the set `Set::<u8>::range(10, 20)`.
-///
-/// ## Example: tuples, mapping, and "exists"
-/// ```
-/// let s1: Set<(u8, u8)> = set_build!{ (x, x): (u8, u8) | exists x: u8, x < 100 };
-/// let s2: Set<(u8, u8)> = set_build!{ (x, x): (u8, u8) | x: u8, x < 100 };
-/// ```
-/// Here, s1 generates a set based on `filter` and `map`:
-/// ```
-/// Set::<u8>::from_finite_type(|x: u8| true)
-///     .filter(|x: u8| (x < 100))
-///     .map(|x: u8| ((x, x)))
-/// ```
-/// while s2 generates the same set, but uses `map_by` rather than `map`:
-/// ```
-/// Set::<u8>::from_finite_type(|x: u8| true)
-///     .filter(|x: u8| (x < 100))
-///     .map_by(|x: u8| ((x, x)), |__VERUS_x: (u8, u8)| (__VERUS_x.0))
-/// ```
-/// Although s1 looks simpler, it is harder to work with in proofs.
-/// For example, an obvious assertion about s1 fails, while succeeding for s2:
-/// ```
-/// assert(forall|p: (u8, u8)| s1.contains(p) <==> p.0 == p.1 && p.0 < 100); // FAILS
-/// assert(forall|p: (u8, u8)| s2.contains(p) <==> p.0 == p.1 && p.0 < 100);
-/// ```
-/// Nevertheless, s1 and s2 are equal to each other.
-/// In fact one way to prove the assertion above about s1 is to first use `=~=` to establish
-/// that s1 and s2 are equal:
-/// ```
-/// assert(s1 =~= s2);
-/// assert(forall|p: (u8, u8)| s1.contains(p) <==> p.0 == p.1 && p.0 < 100);
-/// ```
-///
-/// ## Example: datatypes
-/// ```
-/// struct Address {
-///     page: int,
-///     offset: int,
-/// }
-///
-/// proof fn test() {
-///     use vstd::contrib::set_build;
-///
-///     let s: Set<Address> = set_build!{
-///         Address { page, offset }: Address |
-///         page: int in 10..20,
-///         offset: int in 0..4096,
-///     };
-///     assert(s.finite());
-///     assert(s.contains(Address { page: 15, offset: 1024 }));
-///     assert(!s.contains(Address { page: 5, offset: 1024 }));
-/// }
-/// ```
-/// This generates:
-/// ```
-/// Set::<int>::range(10, 20)
-///     .map_flatten_by(
-///         |__VERUS_x: int| {
-///             let page = __VERUS_x;
-///             Set::<int>::range(0, 4096)
-///                 .map_by(
-///                     |offset: int| (Address { page, offset }),
-///                     |__VERUS_x: Address| (__VERUS_x.offset),
-///                 )
-///         },
-///         |__VERUS_x: Address| __VERUS_x.page,
-///     )
-/// ```
-///
-/// ## Example: complex expressions
-/// ```
-/// let s = set_build!{ (x, y, y - x): (int, int, int) | x: int in 10..20, y: int in x..20, x + y != 25 };
-/// assert(s.contains((12, 14, 2)));
-/// assert(!s.contains((14, 12, 2))); // because y = 12 is not in 14..20
-/// assert(s.contains((10, 13, 3)));
-/// assert(s.contains((10, 14, 4)));
-/// assert(!s.contains((10, 15, 5))); // because of x + y != 25
-/// assert(s.contains((10, 16, 6)));
-/// ```
-/// From this, set_build generates:
-/// ```
-/// Set::<int>::range(10, 20)
-///     .map_flatten_by(
-///         |__VERUS_x: int| {
-///             let x = __VERUS_x;
-///             Set::<int>::range(x, 20)
-///                 .filter(|y: int| (x + y != 25))
-///                 .map_by(
-///                     |y: int| ((x, y, y - x)),
-///                     |__VERUS_x: (int, int, int)| (__VERUS_x.1),
-///                 )
-///         },
-///         |__VERUS_x: (int, int, int)| __VERUS_x.0,
-///     )
-/// ```
-#[proc_macro]
-pub fn set_build(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    contrib::set_build::set_build(input, false)
+#[rustfmt::skip]
+mod shim {
+    pub macro Structural($($t:tt)*) { }
+    pub macro StructuralEq($($t:tt)*) { }
+    pub macro is_variant($($t:tt)*) { }
+    pub macro is_variant_no_deprecation_warning($($t:tt)*) { }
+    pub macro verus_enum_synthesize($($t:tt)*) { }
+    pub macro fndecl($($t:tt)*) { }
+    pub macro verus_keep_ghost($($t:tt)*) { }
+    pub macro verus_erase_ghost($($t:tt)*) { }
+    pub macro verus($($t:tt)*) { }
+    pub macro verus_impl($($t:tt)*) { }
+    pub macro verus_trait_impl($($t:tt)*) { }
+    pub macro verus_proof_expr($($t:tt)*) { }
+    pub macro verus_exec_expr_keep_ghost($($t:tt)*) { }
+    pub macro verus_exec_expr_erase_ghost($($t:tt)*) { }
+    pub macro verus_exec_expr($($t:tt)*) { }
+    pub macro verus_proof_macro_exprs($($t:tt)*) { }
+    pub macro verus_exec_macro_exprs($($t:tt)*) { }
+    pub macro verus_exec_inv_macro_exprs($($t:tt)*) { }
+    pub macro verus_ghost_inv_macro_exprs($($t:tt)*) { }
+    pub macro verus_proof_macro_explicit_exprs($($t:tt)*) { }
+    pub macro struct_with_invariants($($t:tt)*) { }
+    pub macro atomic_with_ghost_helper($($t:tt)*) { }
+    pub macro calc_proc_macro($($t:tt)*) { }
+    pub macro verus_verify($($t:tt)*) { }
+    pub macro verus_spec($($t:tt)*) { }
+    pub macro proof_with($($t:tt)*) { }
+    pub macro proof($($t:tt)*) { }
+    pub macro proof_decl($($t:tt)*) { }
+    pub macro set_build($($t:tt)*) { }
+    pub macro set_build_debug($($t:tt)*) { }
+    pub macro exec_spec_verified($($t:tt)*) { }
+    pub macro exec_spec_unverified($($t:tt)*) { }
+    pub macro auto_spec($($t:tt)*) { }
+    pub macro make_spec_type($($t:tt)*) { }
+    pub macro self_view($($t:tt)*) { }
 }
 
-/// Same as set_build, but prints the generated set builder to stderr
-#[proc_macro]
-pub fn set_build_debug(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    contrib::set_build::set_build(input, true)
-}
-
-/// This copies the body of an exec function into a "returns" clause,
-/// so that the exec function will be also usable as a spec function.
-/// For example,
-///   `#[vstd::contrib::auto_spec] fn f(u: u8) -> u8 { u / 2 }`
-/// becomes:
-///   `#[verifier::allow_in_spec] fn f(u: u8) -> u8 returns (u / 2) { u / 2 }`
-/// The macro performs some limited fixups, such as removing proof blocks
-/// and turning +, -, and * into add, sub, mul.
-/// However, only a few such fixups are currently implemented and not all exec bodies
-/// will be usable as return clauses, so this macro will not work on all exec functions.
-#[proc_macro_attribute]
-pub fn auto_spec(
-    _args: proc_macro::TokenStream,
-    input: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    // All the work is done in the preprocesssing; this just double-checks name resolution
-    input
-}
-
-/// Automatically compiles spec items to exec items, with proofs of functional correctness.
-///
-/// This macro takes a list of spec items, and generates a corresponding list of exec items:
-/// - For every struct/enum `A`, we generate `ExecA`, which implements `DeepView<V = A>`
-/// - For every spec function `spec fn f(T) -> U`, we generate
-///   ```rust,ignore
-///   fn exec_f(a: exec(T)) -> (r: exec(U))
-///   ensures r.deep_view() == f(a.deep_view()) { ... }
-///   ```
-///   where `exec(T)` maps a subset of supported spec types to exec types, including
-///   `Seq` (translated to `Vec`) and `Option`.
-///
-/// Below is a non-exhaustive list of supported spec expressions. Items marked with a \* utilize unverified translations from spec to exec code internally.
-///   - Basic arithmetic operations
-///   - Logical operators (&&, ||, &&&, |||, not, ==>)
-///   - If, match and "matches"
-///   - Field expressions
-///   - Bounded quantifiers of the form `forall |i: <type>| <lower> <op> i <op> <upper> ==> <expr>` and `exists |i: <type>| <lower> <op> i <op> <upper> && <expr>`, where:
-///     - `<op>` is either `<=` or `<`
-///     - `<type>` is a Rust primitive integer (`i<N>`, `isize`, `u<N>`, `usize`)
-///   - `SpecString` (an alias to `Seq<char>` to syntactically indicate that we want `String`/`&str`), equality\*, indexing, len, string literals
-///   - `Option<T>` with these functions:
-///     - equality, `unwrap`
-///   - `Seq<T>` (compiled to `Vec<T>` or `&[T]` depending on the context), `seq!` literals, and these `Seq` functions:
-///     - equality\*, `len`, indexing, `subrange`\*, `add`\*, `push`\*, `update`\*, `empty`, `to_multiset`\*, `drop_first`\*, `drop_last`\*, `take`\*, `skip`\*, `first`, `last`, `is_suffix_of`\*, `is_prefix_of`\*, `contains`\*, `index_of`\*, `index_of_first`\*, `index_of_last`\*
-///   - `Map<K, V>` (compiled to `HashMap<K, V>`), and these `Map` functions:
-///     - equality\*, `len`\*, indexing\*, `empty`, `dom`\*, `insert`\*, `remove`\*, `get`\*
-///     - Note: indexing is only supported on `Map<K, V>` where `K` is a primitive type (e.g. `usize`); for other types `K`, use `get` instead.
-///   - `Set<T>` (compiled to `HashSet<T>`), and these `Set` functions:
-///     - equality\*, `len`\*, `empty`, `contains`\*, `insert`\*, `remove`\*, `union`\*, `intersect`\*, `difference`\*
-///   - `Multiset<T>` (compiled to `ExecMultiset<T>`, a type implemented in `vstd::contrib::exec_spec` whose internal representation is a `HashMap`), and these `Multiset` functions:
-///     - equality\*, `len`\*, `count`\*, `empty`\*, `singleton`\*, `add`\*, `sub`\*
-///   - User-defined structs and enums. These types should be defined within the macro using spec-compatible types for the fields (e.g. `Seq`). Such types are then compiled to their `Exec-` versions, which use the exec versions of each field's type (e.g. `Vec`/slice).
-///   - Primitive integer/boolean types (`i<N>`, `isize`, `u<N>`, `usize`, `char`, etc.). Note that `int` and `nat` cannot be used in `exec_spec_verified!`.
-#[proc_macro]
-pub fn exec_spec_verified(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    contrib::exec_spec::exec_spec(input, false)
-}
-
-/// Automatically compiles spec items to exec items, but without proofs of functional correctness.
-/// This means that,iIn contrast to `exec_spec_verified!`, all specifications on compiled executable code generated by `exec_spec_unverified!` are trusted.
-///
-/// Supports all of the features supported by `exec_spec_verified!`, as well as these additional features:
-///   - More general bounded quantifiers. Quantifier expressions must match this form: `forall |x1: <type1>, x2: <type2>, ..., xN: <typeN>| <guard1> && <guard2> && ... && <guardN> ==> <body>` or `exists |x1: <type1>, x2: <type2>, ..., xN: <typeN>| <guard1> && <guard2> && ... && <guardN> && <body>`, where:
-///     - `<guardI>` is of the form: `<lowerI> <op> xI <op> <upperI>`, where:
-///         - `<op>` is either `<=` or `<`
-///         - `<lowerI>` and `<upperI>` can mention `xJ` for all `J < I`
-///     - `<typeI>` is a Rust primitive integer (`i<N>`, `isize`, `u<N>`, `usize`) or `char`. Note that `char` is not supported by quantifiers in `exec_spec_verified!`.
-#[proc_macro]
-pub fn exec_spec_unverified(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    contrib::exec_spec::exec_spec(input, true)
-}
-
-/// Automate generating spec types and their View/DeepView implementations
-/// https://github.com/verus-lang/verus/pull/1798
-#[proc_macro_attribute]
-pub fn make_spec_type(
-    attr: proc_macro::TokenStream,
-    input: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    contrib::spec_derive::make_spec_type(attr, input)
-}
-
-#[proc_macro_attribute]
-pub fn self_view(
-    attr: proc_macro::TokenStream,
-    input: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    contrib::spec_derive::self_view(attr, input)
-}
-
-/*** End of contrib macros ***/
+#[rustfmt::skip]
+pub use shim::{
+    Structural, StructuralEq, is_variant, is_variant_no_deprecation_warning, verus_enum_synthesize,
+    fndecl, verus_keep_ghost, verus_erase_ghost, verus, verus_impl, verus_trait_impl,
+    verus_proof_expr, verus_exec_expr_keep_ghost, verus_exec_expr_erase_ghost, verus_exec_expr,
+    verus_proof_macro_exprs, verus_exec_macro_exprs, verus_exec_inv_macro_exprs,
+    verus_ghost_inv_macro_exprs, verus_proof_macro_explicit_exprs, struct_with_invariants,
+    atomic_with_ghost_helper, calc_proc_macro, verus_verify, verus_spec, proof_with, proof,
+    proof_decl, set_build, set_build_debug, exec_spec_verified, exec_spec_unverified, auto_spec,
+    make_spec_type, self_view,
+};

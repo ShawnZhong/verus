@@ -486,7 +486,11 @@ impl Op {
                 append_profile_rerun("Function-Expand-Errors", *profile_rerun)
             }
         };
-        format!("{:} {:}", prefix, fun_as_friendly_rust_name(&self.get_function().x.name))
+        // Append the function's span so the banner line itself is
+        // clickable — mirrors the `;; <span>` comments the assert/axiom
+        // printers now emit for their sub-expressions.
+        let func = self.get_function();
+        format!("{:} {:} {:}", prefix, fun_as_friendly_rust_name(&func.x.name), func.span.as_string)
     }
 
     /// Intended for Query ops, so the driver can describe queries to the user

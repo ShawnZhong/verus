@@ -19,8 +19,11 @@ quote = "1.0"
 proc-macro2 = "1.0"
 indexmap = { version = "1" }
 
-[lib]
-proc-macro = true
+# Regular library (not `proc-macro = true`). User-facing macros are exposed
+# via `pub macro NAME() {}` decl_macro stubs; consumers register the real
+# proc-macro descriptors (the `MACROS` slice in src/lib.rs) with the patched
+# `rustc_metadata::proc_macro_registry`. Mirrors verus_builtin_macros — see
+# its Cargo.toml comment for the full rationale.
 
 [lints]
 workspace = true
